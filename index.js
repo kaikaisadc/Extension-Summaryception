@@ -454,8 +454,8 @@ async function unghostAllMessages() {
     const maxIdx = Math.max(...toUnhide);
 
     const progressToast = toastr.info(
-        `Unhiding messages ${minIdx}–${maxIdx}...`,
-        'Summaryception — Clearing',
+        `正在取消隐藏消息 ${minIdx}–${maxIdx}…`,
+        'Summaryception — 清理中',
         { timeOut: 0, extendedTimeOut: 0, tapToDismiss: false }
     );
 
@@ -584,8 +584,8 @@ async function repairIfBranched() {
         log(`Branch repair complete. summarizedUpTo: ${oldSummarizedUpTo} → ${store.summarizedUpTo}`);
 
         toastr.info(
-            `Branch detected — trimmed ${oldSummarizedUpTo - store.summarizedUpTo} turns of stale summary data that referenced messages beyond the branch point.`,
-            'Summaryception — Branch Repair',
+            `检测到分支 — 已裁剪 ${oldSummarizedUpTo - store.summarizedUpTo} 个轮次的过期摘要数据（这些数据引用了分支点之后的消息）。`,
+            'Summaryception — 分支修复',
             { timeOut: TUNING.toastExtended }
         );
     }
@@ -830,7 +830,7 @@ async function callSummarizer(storyTxt, contextStr) {
 
             if (signal.aborted) {
                 log('Summarization aborted by user.');
-                toastr.warning('Summarization aborted.', 'Summaryception', { timeOut: TUNING.toastMedium });
+                toastr.warning('摘要已中止。', 'Summaryception', { timeOut: TUNING.toastMedium });
                 return '';
             }
 
@@ -880,7 +880,7 @@ async function callSummarizer(storyTxt, contextStr) {
 
                 if (signal.aborted || err.message === 'Aborted by user') {
                     log('Summarization aborted by user.');
-                    toastr.warning('Summarization aborted.', 'Summaryception', { timeOut: TUNING.toastMedium });
+                    toastr.warning('摘要已中止。', 'Summaryception', { timeOut: TUNING.toastMedium });
                     return '';
                 }
 
@@ -913,7 +913,7 @@ async function callSummarizer(storyTxt, contextStr) {
                 console.warn(LOG_PREFIX, `Attempt ${attempt + 1} failed (${status}). Retrying in ${delaySec}s...`, err.message || err);
 
                 toastr.warning(
-                    `API error (${status}). Retrying in ${delaySec}s... (${attempt + 1}/${RETRY_CONFIG.maxRetries})`,
+                    `API 错误（${status}）。将在 ${delaySec} 秒后重试…（${attempt + 1}/${RETRY_CONFIG.maxRetries}）`,
                     'Summaryception',
                     { timeOut: delay }
                 );
@@ -931,7 +931,7 @@ async function callSummarizer(storyTxt, contextStr) {
         const status = lastError?.status || lastError?.response?.status || '';
         console.error(LOG_PREFIX, 'Summarization failed after all retries:', lastError);
         toastr.error(
-            `Summarization failed after ${RETRY_CONFIG.maxRetries} retries${status ? ` (${status})` : ''}. Batch skipped — will retry on next trigger.`,
+            `摘要失败，已重试 ${RETRY_CONFIG.maxRetries} 次${status ? `（${status}）` : ''}。本批已跳过，将在下次触发时重试。`,
             'Summaryception',
             { timeOut: TUNING.toastError }
         );
@@ -1073,7 +1073,7 @@ async function summarizeOneBatch(visibleTurns) {
 
         const contextStr = buildFullContext(0);
 
-        toastr.info(`Summarizing ${batch.length} turn${batch.length > 1 ? 's' : ''}…`, 'Summaryception', {
+        toastr.info(`正在摘要 ${batch.length} 个轮次${batch.length > 1 ? '（多条）' : ''}…`, 'Summaryception', {
             timeOut: TUNING.toastMedium,
             progressBar: true,
         });
@@ -1108,7 +1108,7 @@ async function summarizeOneBatch(visibleTurns) {
             log('Could not save chat:', e);
         }
 
-        toastr.success(`Summary saved (Layer 0: ${store.layers[0].length} snippets)`, 'Summaryception', { timeOut: TUNING.toastDefault });
+        toastr.success(`摘要已保存（第 0 层：${store.layers[0].length} 个片段）`, 'Summaryception', { timeOut: TUNING.toastDefault });
         trace('<<< EXITING summarizeOneBatch - SUCCESS');
         return true;
 
@@ -1258,8 +1258,8 @@ async function runCatchup(visibleTurns, overflow) {
     trace('  totalBatches calculated:', totalBatches);
 
     const progressToast = toastr.info(
-        `Processing backlog: 0 / ${totalBatches} batches (0%)`,
-        'Summaryception Catch-Up',
+        `正在处理积压：0 / ${totalBatches} 批（0%）`,
+        'Summaryception — 补摘要',
         {
             timeOut: 0,
             extendedTimeOut: 0,
@@ -1308,7 +1308,7 @@ async function runCatchup(visibleTurns, overflow) {
 
                 if (consecutiveFailures >= TUNING.consecutiveFailureLimit) {
                     toastr.error(
-                        `${TUNING.consecutiveFailureLimit} consecutive failures — API may be down. Pausing catch-up. Progress saved; will resume on next message.`,
+                        `连续失败 ${TUNING.consecutiveFailureLimit} 次 — API 可能不可用。已暂停补摘要。进度已保存，将在下一条消息时继续。`,
                         'Summaryception',
                         { timeOut: TUNING.toastError }
                     );
@@ -1318,9 +1318,9 @@ async function runCatchup(visibleTurns, overflow) {
             }
 
             const pct = Math.round((completed / totalBatches) * 100);
-            const failStr = failed > 0 ? ` | ${failed} failed` : '';
+            const failStr = failed > 0 ? ` | ${failed} 批失败` : '';
             $(progressToast).find('.toast-message').text(
-                `Processing: ${completed} / ${totalBatches} batches (${pct}%)${failStr}\nClick ✕ to pause`
+                `正在处理：${completed} / ${totalBatches} 批（${pct}%）${failStr}\n点击 ✕ 暂停`
             );
 
             await new Promise(r => setTimeout(r, TUNING.catchupInterBatchDelay));
@@ -1330,19 +1330,19 @@ async function runCatchup(visibleTurns, overflow) {
 
         if (cancelled) {
             toastr.warning(
-                `Catch-up paused at ${completed}/${totalBatches}. Progress saved — will continue on next message.`,
+                `补摘要已暂停于 ${completed}/${totalBatches}。进度已保存 — 将在下一条消息时继续。`,
                 'Summaryception',
                 { timeOut: TUNING.toastLonger }
             );
         } else if (failed === 0) {
             toastr.success(
-                `Catch-up complete! ${completed} batches processed.`,
+                `补摘要完成！已处理 ${completed} 批。`,
                 'Summaryception',
                 { timeOut: TUNING.toastLong }
             );
         } else {
             toastr.warning(
-                `Catch-up finished. ${completed} succeeded, ${failed} failed (will retry on next trigger).`,
+                `补摘要结束。成功 ${completed} 批，失败 ${failed} 批（将在下次触发时重试）。`,
                 'Summaryception',
                 { timeOut: TUNING.toastExtended }
             );
@@ -1365,32 +1365,32 @@ async function showCatchupDialog(overflowCount, estimatedCalls) {
         overlay.className = 'sc-catchup-overlay';
         overlay.innerHTML = `
         <div class="sc-catchup-modal">
-        <h3>🧠 Summaryception — Backlog Detected</h3>
+        <h3>🧠 Summaryception — 检测到积压</h3>
         <div class="sc-catchup-dialog">
-        <p>Summaryception detected <strong>${overflowCount} unsummarized turns</strong>
-        in this chat (beyond your ${s.verbatimTurns} verbatim limit).</p>
-        <p>This will require approximately <strong>${estimatedCalls} summarizer calls</strong> to process.</p>
+        <p>Summaryception 检测到本聊天中有 <strong>${overflowCount} 个尚未摘要的轮次</strong>
+        （超出你设置的 ${s.verbatimTurns} 个原文保留轮次）。</p>
+        <p>处理这些内容大约需要 <strong>${estimatedCalls} 次摘要调用</strong>。</p>
         <hr>
         <div class="sc-catchup-options">
         <button id="sc_catchup_full" class="menu_button">
         <i class="fa-solid fa-forward-fast"></i>
         <div class="sc-btn-text">
-        <span class="sc-btn-label">Process Entire Backlog</span>
-        <span class="sc-btn-desc">Summarize all ${overflowCount} turns — cancelable at any time</span>
+        <span class="sc-btn-label">处理全部积压</span>
+        <span class="sc-btn-desc">摘要全部 ${overflowCount} 个轮次 — 可随时取消</span>
         </div>
         </button>
         <button id="sc_catchup_skip" class="menu_button">
         <i class="fa-solid fa-forward-step"></i>
         <div class="sc-btn-text">
-        <span class="sc-btn-label">Skip Backlog</span>
-        <span class="sc-btn-desc">Ignore old turns, only summarize new ones going forward</span>
+        <span class="sc-btn-label">跳过积压</span>
+        <span class="sc-btn-desc">忽略旧轮次，只从今往后摘要新轮次</span>
         </div>
         </button>
         <button id="sc_catchup_partial" class="menu_button">
         <i class="fa-solid fa-play"></i>
         <div class="sc-btn-text">
-        <span class="sc-btn-label">Just One Batch</span>
-        <span class="sc-btn-desc">Summarize ${s.turnsPerSummary} turns now, deal with the rest later</span>
+        <span class="sc-btn-label">只处理一批</span>
+        <span class="sc-btn-desc">现在摘要 ${s.turnsPerSummary} 个轮次，其余稍后处理</span>
         </div>
         </button>
         </div>
@@ -1442,7 +1442,7 @@ async function maybePromoteLayer(layerIndex) {
         log(`Seeded Layer ${layerIndex + 1} with oldest snippet from Layer ${layerIndex} (no LLM call)`);
 
         toastr.info(
-            `Seeded Layer ${layerIndex + 1} from Layer ${layerIndex} (free promotion)`,
+            `已将第 ${layerIndex + 1} 层从第 ${layerIndex} 层播种（免费提升）`,
             'Summaryception',
             { timeOut: TUNING.toastDefault }
         );
@@ -1461,7 +1461,7 @@ async function maybePromoteLayer(layerIndex) {
     const contextStr = buildFullContext(layerIndex + 1);
 
     toastr.info(
-        `Promoting ${toMerge.length} snippets: Layer ${layerIndex} → Layer ${layerIndex + 1}`,
+        `正在提升 ${toMerge.length} 个片段：第 ${layerIndex} 层 → 第 ${layerIndex + 1} 层`,
         'Summaryception',
         { timeOut: TUNING.toastMedium, progressBar: true }
     );
@@ -1602,19 +1602,19 @@ function registerSlashCommands() {
             name: 'sc-status',
             callback: () => {
                 const store = getChatStore();
-                const lines = ['**Summaryception Status**'];
-                lines.push(`Summarized up to index: ${store.summarizedUpTo}`);
+                const lines = ['**Summaryception 状态**'];
+                lines.push(`已摘要至聊天索引：${store.summarizedUpTo}`);
                 if (store.layers) {
                     for (let i = 0; i < store.layers.length; i++) {
                         const l = store.layers[i];
                         if (l && l.length > 0) {
-                            lines.push(`Layer ${i}: ${l.length} snippets`);
+                            lines.push(`第 ${i} 层：${l.length} 个片段`);
                         }
                     }
                 }
                 return lines.join('\n');
             },
-            helpString: 'Show Summaryception layer status',
+            helpString: '显示 Summaryception 的分层状态',
         }));
 
         SlashCommandParser.addCommandObject(SlashCommand.fromProps({
@@ -1639,17 +1639,17 @@ function registerSlashCommands() {
                 }
                 updateInjection();
                 updateUI();
-                return 'Summaryception memory cleared and messages unghosted.';
+                return 'Summaryception 记忆已清空，消息已取消隐藏。';
             },
-            helpString: 'Clear all Summaryception memory and unghost messages for this chat',
+            helpString: '清空本聊天的全部 Summaryception 记忆并取消消息隐藏',
         }));
 
         SlashCommandParser.addCommandObject(SlashCommand.fromProps({
             name: 'sc-preview',
             callback: () => {
-                return assembleSummaryBlock() || '(No summaries yet)';
+                return assembleSummaryBlock() || '（暂无摘要）';
             },
-            helpString: 'Preview the summary block that would be injected',
+            helpString: '预览将要注入的摘要内容块',
         }));
     } catch (e) {
         log('Could not register slash commands:', e);
@@ -1708,31 +1708,31 @@ function updateUI() {
 
         let statsHtml = '';
         if (s.disableGhosting) {
-            statsHtml += `<div class="sc-layer-stat">👻 <strong>${ghostedCount}</strong> messages ghosted (metadata only — not visually hidden)</div>`;
+            statsHtml += `<div class="sc-layer-stat">👻 <strong>${ghostedCount}</strong> 条消息已标记为已摘要（仅元数据 — 未在界面上隐藏）</div>`;
         } else {
-            statsHtml += `<div class="sc-layer-stat">👻 <strong>${ghostedCount}</strong> messages ghosted (hidden from LLM, visible to you)</div>`;
+            statsHtml += `<div class="sc-layer-stat">👻 <strong>${ghostedCount}</strong> 条消息已从 LLM 上下文隐藏（你仍可见）</div>`;
         }
         if (store.layers) {
             for (let i = store.layers.length - 1; i >= 0; i--) {
                 const layer = store.layers[i];
                 if (layer && layer.length > 0) {
-                    const label = i === 0 ? 'Layer 0 (turn summaries)' : `Layer ${i} (depth ${i} meta)`;
+                    const label = i === 0 ? '第 0 层（轮次摘要）' : `第 ${i} 层（深度 ${i} 元摘要）`;
                     statsHtml += `<div class="sc-layer-stat">
                     <span class="sc-layer-label">${label}:</span>
-                    <strong>${layer.length}</strong> / ${s.snippetsPerLayer} snippets
+                    <strong>${layer.length}</strong> / ${s.snippetsPerLayer} 个片段
                     </div>`;
                 }
             }
         }
-        statsHtml += `<div class="sc-layer-stat sc-muted">Summarized up to chat index: ${store.summarizedUpTo ?? -1}</div>`;
+        statsHtml += `<div class="sc-layer-stat sc-muted">已摘要至聊天索引：${store.summarizedUpTo ?? -1}</div>`;
         if (!store.layers?.length || store.layers.every(l => !l || l.length === 0)) {
-            statsHtml = '<div class="sc-layer-stat sc-muted">No summaries yet for this chat.</div>';
+            statsHtml = '<div class="sc-layer-stat sc-muted">本聊天暂无摘要。</div>';
         }
 
         $('#sc_layer_stats').html(statsHtml);
 
         const preview = assembleSummaryBlock();
-        $('#sc_preview').val(preview || '(empty — no summaries yet)');
+        $('#sc_preview').val(preview || '（空 — 暂无摘要）');
 
         updateSnippetBrowser();
         updateCustomPromptSlots();
@@ -1744,7 +1744,7 @@ function updateUI() {
 function updateCustomPromptSlots() {
     const s = getSettings();
     const select = $('#sc_custom_prompt_slot');
-    select.empty().append('<option value="">-- Load a saved prompt --</option>');
+    select.empty().append('<option value="">-- 加载已保存的提示词 --</option>');
 
     const prompts = s.savedCustomPrompts || {};
     const names = Object.keys(prompts).sort();
@@ -1772,31 +1772,31 @@ function updateSnippetBrowser() {
     let html = '';
 
     if (!store.layers || store.layers.every(l => !l || l.length === 0)) {
-        html = '<div class="sc-muted">No snippets to display.</div>';
+        html = '<div class="sc-muted">暂无片段可显示。</div>';
     } else {
         for (let i = store.layers.length - 1; i >= 0; i--) {
             const layer = store.layers[i];
             if (!layer || layer.length === 0) continue;
-            const label = i === 0 ? 'Layer 0 (Turn Summaries)' : `Layer ${i} (Meta-Summary)`;
+            const label = i === 0 ? '第 0 层（轮次摘要）' : `第 ${i} 层（元摘要）`;
             html += `<div class="sc-browser-layer"><div class="sc-browser-layer-title">${label}</div>`;
             for (let j = 0; j < layer.length; j++) {
                 const sn = layer[j];
                 const rangeStr = sn.turnRange
-                    ? `turns ${sn.turnRange[0]}–${sn.turnRange[1]}`
+                    ? `轮次 ${sn.turnRange[0]}–${sn.turnRange[1]}`
                     : sn.mergedCount
-                        ? `merged ${sn.mergedCount} from L${sn.fromLayer}`
+                        ? `合并 ${sn.mergedCount} 个片段（来自第 ${sn.fromLayer} 层）`
                         : '';
                 const seedStr = sn.promoted ? ' 🌱' : '';
                 const canRedo = (i === 0 && sn.turnRange);
                 const redoBtn = canRedo
-                    ? `<button class="sc-snippet-redo menu_button fa-solid fa-rotate-right" title="Regenerate this snippet"></button>`
+                    ? `<button class="sc-snippet-redo menu_button fa-solid fa-rotate-right" title="重新生成此片段"></button>`
                     : '';
 
                 html += `<div class="sc-snippet" data-layer="${i}" data-idx="${j}">
-                <span class="sc-snippet-text" data-layer="${i}" data-idx="${j}" title="Click to edit">${escapeHtml(sn.text)}</span>
+                <span class="sc-snippet-text" data-layer="${i}" data-idx="${j}" title="点击编辑">${escapeHtml(sn.text)}</span>
                 <span class="sc-snippet-meta">${rangeStr}${seedStr}</span>
                 ${redoBtn}
-                <button class="sc-snippet-delete menu_button fa-solid fa-xmark" title="Delete this snippet"></button>
+                <button class="sc-snippet-delete menu_button fa-solid fa-xmark" title="删除此片段"></button>
                 </div>`;
             }
             html += '</div>';
@@ -1825,7 +1825,7 @@ function updateSnippetBrowser() {
                         sn.text = newText;
                         await saveChatStore();
                         updateInjection();
-                        toastr.success('Snippet updated', 'Summaryception', { timeOut: TUNING.toastShort });
+                        toastr.success('片段已更新', 'Summaryception', { timeOut: TUNING.toastShort });
                     }
                     updateSnippetBrowser();
                 } else if (e.key === 'Escape') {
@@ -1838,7 +1838,7 @@ function updateSnippetBrowser() {
                     sn.text = newText;
                     await saveChatStore();
                     updateInjection();
-                    toastr.success('Snippet updated', 'Summaryception', { timeOut: TUNING.toastShort });
+                    toastr.success('片段已更新', 'Summaryception', { timeOut: TUNING.toastShort });
                 }
                 updateSnippetBrowser();
             });
@@ -1864,7 +1864,7 @@ function updateSnippetBrowser() {
 
         if (!sn.turnRange) {
             toastr.warning(
-                'Only Layer 0 (turn summary) snippets can be regenerated. Promoted meta-summaries have no source turns.',
+                '只有第 0 层（轮次摘要）的片段可以重新生成。已提升的元摘要没有对应的源轮次。',
                 'Summaryception',
                 { timeOut: TUNING.toastLonger }
             );
@@ -1872,14 +1872,14 @@ function updateSnippetBrowser() {
         }
 
         if (isSummarizing) {
-            toastr.warning('Already summarizing. Please wait.', 'Summaryception');
+            toastr.warning('正在摘要，请稍候。', 'Summaryception');
             return;
         }
 
         const [rangeStart, rangeEnd] = sn.turnRange;
         const { chat } = SillyTavern.getContext();
 
-        if (!confirm(`Regenerate summary for turns ${rangeStart}–${rangeEnd}?`)) return;
+        if (!confirm(`要为轮次 ${rangeStart}–${rangeEnd} 重新生成摘要吗？`)) return;
 
         isSummarizing = true;
         const btn = $(this);
@@ -1889,7 +1889,7 @@ function updateSnippetBrowser() {
             const storyTxt = buildPassageFromRange(chat, rangeStart, rangeEnd);
 
             if (!storyTxt.trim()) {
-                toastr.error('Source turns are empty — cannot regenerate.', 'Summaryception');
+                toastr.error('源轮次为空 — 无法重新生成。', 'Summaryception');
                 return;
             }
 
@@ -1904,7 +1904,7 @@ function updateSnippetBrowser() {
             }
             const contextStr = contextParts.length > 0 ? contextParts.join(' ') : '(none yet)';
 
-            toastr.info(`Regenerating summary for turns ${rangeStart}–${rangeEnd}…`, 'Summaryception', {
+            toastr.info(`正在为轮次 ${rangeStart}–${rangeEnd} 重新生成摘要…`, 'Summaryception', {
                 timeOut: TUNING.toastMedium,
                 progressBar: true,
             });
@@ -1912,7 +1912,7 @@ function updateSnippetBrowser() {
             const newSummary = await callSummarizer(storyTxt, contextStr);
 
             if (!newSummary) {
-                toastr.error('Regeneration failed — original snippet kept.', 'Summaryception');
+                toastr.error('重新生成失败 — 已保留原片段。', 'Summaryception');
                 return;
             }
 
@@ -1924,7 +1924,7 @@ function updateSnippetBrowser() {
             updateInjection();
             updateUI();
 
-            toastr.success(`Snippet regenerated for turns ${rangeStart}–${rangeEnd}`, 'Summaryception', { timeOut: TUNING.toastMedium });
+            toastr.success(`已为轮次 ${rangeStart}–${rangeEnd} 重新生成片段`, 'Summaryception', { timeOut: TUNING.toastMedium });
 
         } finally {
             isSummarizing = false;
@@ -1952,7 +1952,7 @@ function updateSnippetBrowser() {
             await saveChatStore();
             updateInjection();
             updateUI();
-            toastr.info(`Snippet removed from Layer ${layerIdx}`, 'Summaryception');
+            toastr.info(`已从第 ${layerIdx} 层移除片段`, 'Summaryception');
         }
     });
 }
@@ -1977,13 +1977,13 @@ function bindUIEvents() {
 
         if (s.pauseSummarization) {
             toastr.info(
-                'Summarization paused. Existing summaries will continue to be injected. Use Force Summarize or unpause to catch up.',
+                '摘要已暂停。已有摘要仍会继续注入。使用“立即强制摘要”或取消暂停来补上进度。',
                 'Summaryception',
                 { timeOut: TUNING.toastLonger }
             );
         } else {
             toastr.info(
-                'Summarization resumed. Will process new turns automatically.',
+                '摘要已恢复。将自动处理新的轮次。',
                 'Summaryception',
                 { timeOut: TUNING.toastMedium }
             );
@@ -1996,7 +1996,7 @@ function bindUIEvents() {
 
         if ($(this).prop('checked')) {
             toastr.info(
-                'Message hiding disabled. Summarized messages will remain visible but still be excluded from LLM context via the sc_ghosted flag.',
+                '已禁用消息隐藏。已摘要的消息仍会显示，但会通过 sc_ghosted 标记继续从 LLM 上下文中排除。',
                 'Summaryception',
                 { timeOut: TUNING.toastLonger }
             );
@@ -2059,8 +2059,8 @@ function bindUIEvents() {
         let repaired = 0;
 
         const progressToast = toastr.info(
-            'Scanning for orphaned messages...',
-            'Summaryception — Repair',
+            '正在扫描孤立消息…',
+            'Summaryception — 修复',
             { timeOut: 0, extendedTimeOut: 0, tapToDismiss: false }
         );
 
@@ -2087,7 +2087,7 @@ function bindUIEvents() {
 
                 if (repaired % TUNING.repairProgressInterval === 0) {
                     $(progressToast).find('.toast-message').text(
-                        `Repairing: found ${repaired} orphaned messages...`
+                        `修复中：已找到 ${repaired} 条孤立消息…`
                     );
                 }
             }
@@ -2104,23 +2104,23 @@ function bindUIEvents() {
             }
             updateUI();
             toastr.success(
-                `Repaired ${repaired} orphaned messages. They are now visible to the summarizer again.`,
+                `已修复 ${repaired} 条孤立消息。它们现在会重新对摘要器可见。`,
                 'Summaryception',
                 { timeOut: TUNING.toastLonger }
             );
         } else {
-            toastr.info('No orphaned messages found.', 'Summaryception', { timeOut: TUNING.toastMedium });
+            toastr.info('未发现孤立消息。', 'Summaryception', { timeOut: TUNING.toastMedium });
         }
     });
 
     $(document).on('click', '#sc_clear_memory', async function () {
-        if (!confirm('Clear ALL Summaryception memory for this chat and unghost all messages?')) return;
+        if (!confirm('要清空本聊天的全部 Summaryception 记忆并取消所有消息隐藏吗？')) return;
 
         try {
             await unghostAllMessages();
         } catch (e) {
             console.error(LOG_PREFIX, 'Error during unghost (continuing with clear):', e);
-            toastr.warning('Some messages could not be unghosted, but memory will still be cleared.', 'Summaryception');
+            toastr.warning('部分消息未能取消隐藏，但记忆仍会被清空。', 'Summaryception');
         }
 
         const store = getChatStore();
@@ -2140,23 +2140,23 @@ function bindUIEvents() {
         }
         updateInjection();
         updateUI();
-        toastr.success('Memory cleared & messages unghosted', 'Summaryception');
+        toastr.success('记忆已清空，消息已取消隐藏', 'Summaryception');
     });
 
     $(document).on('click', '#sc_force_summarize', async function () {
         const s = getSettings();
         if (!s.enabled) {
-            toastr.warning('Enable Summaryception first.');
+            toastr.warning('请先启用 Summaryception。');
             return;
         }
         if (isSummarizing) {
-            toastr.warning('Already summarizing. Please wait.');
+            toastr.warning('正在摘要，请稍候。');
             return;
         }
         if (s.pauseSummarization) {
             log('Force Summarize overrides pause mode.');
         }
-        $(this).prop('disabled', true).text(' Working…');
+        $(this).prop('disabled', true).text(' 处理中…');
         try {
             catchupDismissed = false;
 
@@ -2165,28 +2165,28 @@ function bindUIEvents() {
             const visibleTurns = allAssistantTurns.filter(t => !chat[t.index].extra?.sc_ghosted);
 
             if (visibleTurns.length <= s.verbatimTurns) {
-                toastr.info('Nothing to summarize — visible turns are within the verbatim limit.', 'Summaryception');
+                toastr.info('没有需要摘要的内容 — 可见轮次仍在原文保留限制内。', 'Summaryception');
                 return;
             }
 
             const overflow = visibleTurns.length - s.verbatimTurns;
-            toastr.info(`${overflow} turns to process. Starting...`, 'Summaryception', { timeOut: TUNING.toastDefault });
+            toastr.info(`有 ${overflow} 个轮次待处理。开始…`, 'Summaryception', { timeOut: TUNING.toastDefault });
 
             await runCatchup(visibleTurns, overflow);
             updateInjection();
         } finally {
-            $(this).prop('disabled', false).html('<i class="fa-solid fa-bolt"></i> Force Summarize Now');
+            $(this).prop('disabled', false).html('<i class="fa-solid fa-bolt"></i> 立即强制摘要');
             updateUI();
         }
     });
 
     $(document).on('click', '#sc_stop_summarize', function () {
         if (!isSummarizing && !currentAbortController) {
-            toastr.info('Nothing is running.', 'Summaryception');
+            toastr.info('当前没有正在运行的任务。', 'Summaryception');
             return;
         }
         abortSummarization();
-        toastr.warning('Summarization stopped. Progress has been saved.', 'Summaryception', { timeOut: TUNING.toastLong });
+        toastr.warning('摘要已停止。进度已保存。', 'Summaryception', { timeOut: TUNING.toastLong });
         $(this).prop('disabled', true);
         setTimeout(() => $(this).prop('disabled', false), TUNING.stopButtonCooldown);
         updateUI();
@@ -2203,7 +2203,7 @@ function bindUIEvents() {
         a.download = `summaryception_${Date.now()}.json`;
         a.click();
         URL.revokeObjectURL(url);
-        toastr.success('Memory exported', 'Summaryception');
+        toastr.success('记忆已导出', 'Summaryception');
     });
 
     $(document).on('click', '#sc_import', function () {
@@ -2217,7 +2217,7 @@ function bindUIEvents() {
                 const text = await file.text();
                 const data = JSON.parse(text);
                 if (!data.layers || !Array.isArray(data.layers)) {
-                    toastr.error('Invalid file format.');
+                    toastr.error('文件格式无效。');
                     return;
                 }
 
@@ -2244,13 +2244,13 @@ function bindUIEvents() {
                 updateInjection();
                 updateUI();
                 toastr.success(
-                    `Memory imported. ${store.layers.reduce((sum, l) => sum + (l?.length || 0), 0)} snippets loaded, messages ghosted up to index ${store.summarizedUpTo}.`,
+                    `记忆已导入。已加载 ${store.layers.reduce((sum, l) => sum + (l?.length || 0), 0)} 个片段，消息已隐藏至索引 ${store.summarizedUpTo}。`,
                                'Summaryception',
                                { timeOut: TUNING.toastLong }
                 );
             } catch (err) {
                 console.error(LOG_PREFIX, err);
-                toastr.error('Import failed — check console.');
+                toastr.error('导入失败 — 请查看控制台。');
             }
         };
         input.click();
@@ -2316,7 +2316,7 @@ function bindUIEvents() {
     $(document).on('click', '#sc_custom_prompt_save', function () {
         const name = $('#sc_custom_prompt_name').val().trim();
         if (!name) {
-            toastr.warning('Enter a name for the prompt.', 'Summaryception');
+            toastr.warning('请输入提示词名称。', 'Summaryception');
             return;
         }
 
@@ -2325,7 +2325,7 @@ function bindUIEvents() {
 
         const promptText = $('#sc_summarizer_user_prompt').val();
         if (!promptText.trim()) {
-            toastr.warning('Prompt is empty — nothing to save.', 'Summaryception');
+            toastr.warning('提示词为空 — 没有可保存的内容。', 'Summaryception');
             return;
         }
 
@@ -2337,7 +2337,7 @@ function bindUIEvents() {
         updateCustomPromptSlots();
 
         toastr.success(
-            `Prompt "${name}" ${isOverwrite ? 'updated' : 'saved'}.`,
+            `提示词“${name}”已${isOverwrite ? '更新' : '保存'}。`,
             'Summaryception',
             { timeOut: TUNING.toastDefault }
         );
@@ -2347,14 +2347,14 @@ function bindUIEvents() {
     $(document).on('click', '#sc_custom_prompt_load', function () {
         const name = $('#sc_custom_prompt_slot').val();
         if (!name) {
-            toastr.warning('Select a saved prompt to load.', 'Summaryception');
+            toastr.warning('请选择要加载的已保存提示词。', 'Summaryception');
             return;
         }
 
         const s = getSettings();
         const promptText = s.savedCustomPrompts?.[name];
         if (!promptText) {
-            toastr.error(`Prompt "${name}" not found.`, 'Summaryception');
+            toastr.error(`未找到提示词“${name}”。`, 'Summaryception');
             return;
         }
 
@@ -2365,18 +2365,18 @@ function bindUIEvents() {
         $('#sc_prompt_preset').val('custom');
         saveSettings();
 
-        toastr.success(`Loaded prompt "${name}".`, 'Summaryception', { timeOut: TUNING.toastDefault });
+        toastr.success(`已加载提示词“${name}”。`, 'Summaryception', { timeOut: TUNING.toastDefault });
     });
 
     // ── Custom Prompt: Delete named slot ──
     $(document).on('click', '#sc_custom_prompt_delete_slot', function () {
         const name = $('#sc_custom_prompt_slot').val();
         if (!name) {
-            toastr.warning('Select a saved prompt to delete.', 'Summaryception');
+            toastr.warning('请选择要删除的已保存提示词。', 'Summaryception');
             return;
         }
 
-        if (!confirm(`Delete saved prompt "${name}"?`)) return;
+        if (!confirm(`要删除已保存的提示词“${name}”吗？`)) return;
 
         const s = getSettings();
         if (s.savedCustomPrompts) {
@@ -2385,14 +2385,14 @@ function bindUIEvents() {
         }
 
         updateCustomPromptSlots();
-        toastr.info(`Prompt "${name}" deleted.`, 'Summaryception', { timeOut: TUNING.toastDefault });
+        toastr.info(`提示词“${name}”已删除。`, 'Summaryception', { timeOut: TUNING.toastDefault });
     });
 
     // ── Custom Prompt: Export as .txt ──
     $(document).on('click', '#sc_custom_prompt_export', function () {
         const promptText = $('#sc_summarizer_user_prompt').val();
         if (!promptText.trim()) {
-            toastr.warning('Prompt is empty — nothing to export.', 'Summaryception');
+            toastr.warning('提示词为空 — 没有可导出的内容。', 'Summaryception');
             return;
         }
 
@@ -2403,7 +2403,7 @@ function bindUIEvents() {
         a.download = `summaryception_prompt_${Date.now()}.txt`;
         a.click();
         URL.revokeObjectURL(url);
-        toastr.success('Prompt exported.', 'Summaryception', { timeOut: TUNING.toastDefault });
+        toastr.success('提示词已导出。', 'Summaryception', { timeOut: TUNING.toastDefault });
     });
 
     // ── Custom Prompt: Import from .txt ──
@@ -2417,7 +2417,7 @@ function bindUIEvents() {
             try {
                 const text = await file.text();
                 if (!text.trim()) {
-                    toastr.warning('File is empty.', 'Summaryception');
+                    toastr.warning('文件为空。', 'Summaryception');
                     return;
                 }
 
@@ -2432,13 +2432,13 @@ function bindUIEvents() {
                 updateCustomPromptSlots();
 
                 toastr.success(
-                    `Prompt imported from "${file.name}".`,
+                    `已从“${file.name}”导入提示词。`,
                     'Summaryception',
                     { timeOut: TUNING.toastMedium }
                 );
             } catch (err) {
                 console.error(LOG_PREFIX, err);
-                toastr.error('Import failed — check console.', 'Summaryception');
+                toastr.error('导入失败 — 请查看控制台。', 'Summaryception');
             }
         };
         input.click();
@@ -2446,9 +2446,9 @@ function bindUIEvents() {
 
     $(document).on('click', '#sc_reset_defaults', function () {
         if (!confirm(
-            'Reset all Advanced Settings to defaults?\n\n' +
-            'This will reset sliders, prompts, injection template, and strip patterns.\n' +
-            'It will NOT clear your summary memory or connection settings.'
+            '要将所有高级设置恢复为默认值吗？\n\n' +
+            '这将重置滑块、提示词、注入模板和清理模式。\n' +
+            '不会清空你的摘要记忆或连接设置。'
         )) return;
 
         const s = getSettings();
@@ -2477,7 +2477,7 @@ function bindUIEvents() {
         updateUI();
 
         toastr.success(
-            'Advanced settings reset to defaults. Connection settings and summary memory were preserved.',
+            '高级设置已恢复默认。连接设置和摘要记忆已保留。',
             'Summaryception',
             { timeOut: TUNING.toastLong }
         );
@@ -2611,7 +2611,7 @@ function updateConnectionSubPanels(source) {
 }
 
 function populateOllamaModelDropdown(selectElement, models, currentValue) {
-    selectElement.innerHTML = '<option value="">-- Select Model --</option>';
+    selectElement.innerHTML = '<option value="">-- 选择模型 --</option>';
 
     if (models && models.length > 0) {
         for (const model of models) {
@@ -2632,7 +2632,7 @@ async function refreshOllamaModels() {
     const ollamaUrl = s.ollamaUrl || 'http://localhost:11434';
     const modelSelect = document.getElementById('summaryception_ollama_model');
 
-    showConnectionStatus('loading', 'Fetching Ollama models...');
+    showConnectionStatus('loading', '正在获取 Ollama 模型…');
 
     try {
         const models = await fetchOllamaModels(ollamaUrl);
@@ -2643,12 +2643,12 @@ async function refreshOllamaModels() {
             populateOllamaModelDropdown(modelSelect, models, s.ollamaModel);
         }
 
-        showConnectionStatus('success', `Found ${models.length} model(s)`);
-        toastr.success(`Found ${models.length} Ollama model(s)`, 'Summaryception');
+        showConnectionStatus('success', `找到 ${models.length} 个模型`);
+        toastr.success(`找到 ${models.length} 个 Ollama 模型`, 'Summaryception');
     } catch (error) {
         console.error('[Summaryception] Failed to fetch Ollama models:', error);
-        showConnectionStatus('error', `Failed: ${error.message}`);
-        toastr.error(`Failed to fetch Ollama models: ${error.message}`, 'Summaryception');
+        showConnectionStatus('error', `失败：${error.message}`);
+        toastr.error(`获取 Ollama 模型失败：${error.message}`, 'Summaryception');
     }
 }
 
@@ -2656,15 +2656,15 @@ async function testOpenAIConnectionHandler() {
     const s = getSettings();
 
     if (!s.openaiUrl) {
-        toastr.warning('Please enter an endpoint URL first.', 'Summaryception');
+        toastr.warning('请先输入端点 URL。', 'Summaryception');
         return;
     }
     if (!s.openaiModel) {
-        toastr.warning('Please enter a model name first.', 'Summaryception');
+        toastr.warning('请先输入模型名称。', 'Summaryception');
         return;
     }
 
-    showConnectionStatus('loading', 'Testing connection...');
+    showConnectionStatus('loading', '正在测试连接…');
 
     const result = await testOpenAIConnection(s.openaiUrl, s.openaiKey, s.openaiModel);
 
@@ -2719,7 +2719,7 @@ async function fetchProfilesFallback(selectElement, currentValue) {
 
         const profiles = await response.json();
 
-        selectElement.innerHTML = '<option value="">-- Select a Profile --</option>';
+        selectElement.innerHTML = '<option value="">-- 选择连接配置 --</option>';
 
         if (Array.isArray(profiles)) {
             for (const profile of profiles) {

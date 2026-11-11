@@ -1,309 +1,148 @@
-# 🧠 Summaryception
+# 🧠 Summaryception（简体中文分支）
 
-### Layered Recursive Memory for SillyTavern
+> **非官方简体中文 fork。** 上游项目：[Lodactio/Extension-Summaryception](https://github.com/Lodactio/Extension-Summaryception)，作者 **Lodactio**，许可证 **AGPL-3.0**。
 
-> Your AI remembers **thousands of turns** in under **20k tokens**. No context bloat. No lost plot threads. No compromises.
-
-Summaryception is a non-destructive, context-aware memory system for [SillyTavern](https://github.com/SillyTavern/SillyTavern) that replaces brute-force context stuffing with intelligent layered summarization. It keeps your most recent turns verbatim while compressing older conversation into ultra-compact summary snippets — organized in recursive layers that scale indefinitely.
+本分支只翻译用户界面和文档；摘要模型提示词、注入模板、存储结构、命令名和核心逻辑均保持上游原样。原版英文 README 完整保留在 [README.en.md](README.en.md)。
 
 ---
 
-## ✨ The Problem
+## 这是什么
 
-Every roleplayer hits the same wall:
+Summaryception 是一个面向 [SillyTavern](https://github.com/SillyTavern/SillyTavern) 的分层递归摘要记忆扩展。它保留最近一段助手轮次的原文，把更早的对话压缩成摘要片段；当某一层的片段积累过多时，再把旧片段递归合并到更深一层。生成回复时，已摘要的旧消息会从模型上下文中排除，但你仍然可以在聊天界面里向上滚动阅读原文。
 
-| Approach | What happens |
-|---|---|
-| **No summary** | Context fills up → hard truncation → everything before the cutoff is **gone forever** |
-| **Basic summarization** | Lossy single summary → important details vanish → you compensate by keeping 20+ verbatim turns → context still bloats |
-| **More verbatim turns** | 20 turns × 1,500 tokens = 30k tokens of mostly atmospheric prose the LLM has to process → attention degrades → coherence drops anyway |
+该扩展使用 SillyTavern 原生的 `/hide` 和 `/unhide` 命令来隐藏消息，不会删除聊天记录，属于非破坏性处理。
 
-The conventional wisdom — *"keep more raw turns"* — is a band-aid for bad compression.
-
-## 💡 The Solution
-
-Summaryception flips the approach: **compress aggressively, lose nothing.**
-
-A context-aware summarizer prompt examines each batch of turns against what's *already been summarized*, outputting only the **narrative delta** — new plot points, state changes, character decisions. Nothing repeated, nothing lost.
-
-**Real example** — 3 turns, ~5,200 raw tokens, compressed to:
-
-> *Alina kisses Lodactio; he reciprocates; she grows to human size, straddling him; she squeezes his crotch and intends to undo his pants.*
-
-**27 tokens. 125:1 compression. Every plot-relevant beat preserved.**
-
-And because each snippet is written with knowledge of all previous snippets, they get *more efficient over time* — the summarizer doesn't re-establish characters, settings, or relationships that are already recorded. Early snippets might be 40 tokens. By snippet 10, you're seeing 15-token summaries.
+**关于效果的说明：** 摘要本身是**有损压缩**，片段会省略细节；能记住多少、摘要是否准确，取决于所用模型、提示词、语言和聊天内容。本项目不承诺“无损记忆”，也没有对具体模型或硬件做过性能基准测试。文档中的分层和 token 说明只是机制描述，不是实测保证。
 
 ---
 
-## 🔄 How It Works
+## 主要功能
 
-```
-YOUR CHAT (e.g., 200 turns)
-│
-│  Turns 1-180: Ghosted (hidden from LLM, still readable by you)
-│  Turns 181-200: Kept VERBATIM (7 most recent assistant turns)
-│
-│  The ghosted turns have been compressed into:
-│
-│  ┌──────────────────────────────────────────┐
-│  │  LAYER 2 (Deep Memory)                   │
-│  │  Ultra-compressed summaries of Layer 1   │
-│  │  Each covers ~27 turns                   │
-│  ├──────────────────────────────────────────┤
-│  │  LAYER 1 (Meta-Summaries)                │
-│  │  Compressed summaries of Layer 0         │
-│  │  Each covers ~9 turns                    │
-│  ├──────────────────────────────────────────┤
-│  │  LAYER 0 (Turn Summaries)                │
-│  │  Direct summaries of conversation turns  │
-│  │  Each covers ~3 turns                    │
-│  ├──────────────────────────────────────────┤
-│  │  VERBATIM TURNS (most recent 7)          │
-│  │  Sent word-for-word to the LLM           │
-│  └──────────────────────────────────────────┘
-│
-│  Total context: ~12k tokens
-│  Total narrative coverage: EVERYTHING
-```
-
-### The "Ception" — Recursive Layer Promotion
-
-When a layer fills up (default: 30 snippets), the oldest snippets are promoted to the next deeper layer:
-
-1. **Seed promotion** — The very first time a deeper layer opens, the oldest snippet is promoted **directly** as a seed, no LLM call, preserving maximum information as the foundation for that layer.
-2. **Subsequent promotions** — Additional overflow snippets (default: 3 at a time) are summarized together against the destination layer's existing content (including the seed) as prior context.
-3. **Cascade** — If the destination layer also fills up, the process repeats, creating Layer 2, Layer 3, etc.
-
-Each layer multiplies the turn coverage per snippet while maintaining coherent narrative continuity.
+- **分层递归摘要**：第 0 层直接摘要对话轮次；更深的层把旧片段再次摘要，形成多层记忆。
+- **原文保留窗口**：最近若干个助手轮次按原文发送，更早的轮次才进入摘要。
+- **非破坏性消息隐藏**：已摘要消息通过 `/hide` 从模型上下文排除，聊天记录仍然保留。
+- **摘要片段浏览器**：查看、编辑、重新生成或删除各层片段。
+- **注入预览**：查看当前会注入到模型上下文中的摘要内容。
+- **记忆导入/导出**：把当前聊天的摘要记忆导出为 JSON，或从 JSON 恢复。
+- **积压处理**：打开旧聊天时检测大量未摘要轮次，可选择全部处理、跳过或只处理一批。
+- **强制摘要 / 停止 / 修复孤立消息**：手动补摘要、随时中止并保留进度、修复异常隐藏的消息。
+- **多种摘要连接**：默认主 API、OpenAI 兼容端点、本地 Ollama、SillyTavern 连接配置。
+- **斜杠命令**：`/sc-status`、`/sc-preview`、`/sc-clear`。
 
 ---
 
-## 📊 The Math
+## 安装
 
-*Using ~70 tokens per snippet as a working median. Actual snippets range from ~30 tokens (late-layer, minimal delta) to ~100 tokens (early context establishment). Your results will vary based on narrative density.*
+### 要求
 
-### Default Settings (30 snippets/layer, 3 turns/batch, 3 snippets/promotion)
+- **SillyTavern 1.16.0+**（release 或 staging）。更旧的版本可能使用不兼容的 `generateRaw` 签名。
 
-Each promotion merges 3 snippets into 1, so each layer multiplies turn coverage by 3×.
+### 通过 SillyTavern 界面安装
 
-| Layer | Snippets | Turns per Snippet | Total Turns Covered | ~Tokens |
-|---|---|---|---|---|
-| Verbatim | 7 turns | — | 7 | ~5,000 |
-| Layer 0 | 30 | 3 | 90 | ~2,100 |
-| Layer 1 | 30 | 9 | 270 | ~2,100 |
-| Layer 2 | 30 | 27 | 810 | ~2,100 |
-| Layer 3 | 30 | 81 | 2,430 | ~2,100 |
-| Layer 4 | 30 | 243 | 7,290 | ~2,100 |
-| **Total** | — | — | **~10,897 turns** | **~15,500 tokens** |
+1. 打开 **Extensions（扩展）** → **Install Extension（安装扩展）**。
+2. 粘贴本 fork 地址：
+   `https://github.com/kaikaisadc/Extension-Summaryception`
+3. 点击安装。
+4. 刷新 SillyTavern，在扩展设置中找到 **Summaryception**。
 
-> **Nearly 11,000 turns of narrative history in ~16k tokens.**
+### 手动安装
 
-### Conservative Estimate (smaller snippets at deeper layers)
-
-In practice, deeper layers produce shorter snippets as they compress already-compressed material. A more realistic breakdown:
-
-| Layer | Snippets | Turns per Snippet | ~Tokens/Snippet | ~Layer Tokens |
-|---|---|---|---|---|
-| Verbatim | 7 turns | — | — | ~5,000 |
-| Layer 0 | 30 | 3 | ~80 | ~2,400 |
-| Layer 1 | 30 | 9 | ~70 | ~2,100 |
-| Layer 2 | 30 | 27 | ~60 | ~1,800 |
-| Layer 3 | 30 | 81 | ~50 | ~1,500 |
-| Layer 4 | 30 | 243 | ~40 | ~1,200 |
-| **Total** | — | — | — | **~14,000 tokens** |
-
-> **~11,000 turns in ~14k tokens.** The raw conversation? Roughly **15–25 million tokens.** That's a compression ratio approaching **1,000:1**.
-
-For comparison, most roleplayers hit 17,500 tokens by **turn 10** with verbatim context. Summaryception uses the same budget to remember **eleven thousand**.
-
----
-
-## 👻 Non-Destructive Ghost Mode
-
-Summaryception never deletes your messages. Summarized turns are **ghosted** — hidden from the LLM context but fully visible and readable in your chat UI. Scroll up anytime to read the original prose.
-
-- 👻 Ghosted messages show a system icon in the chat
-- Clear Memory unghosts everything instantly
-- Your chat file is never modified destructively
-
----
-
-## 🧹 Clean Prompt Isolation
-
-When Summaryception calls the summarizer, it **temporarily disables all Chat Completion preset toggles** — your creative writing prompts, character instructions, scenario text, everything. The summarizer sees only its own system prompt and the passage to summarize.
-
-This means:
-- ✅ No 4k tokens of story-writing instructions competing with a 200-token summarization task
-- ✅ Budget models perform like premium models on the focused extraction task
-- ✅ Your preset is restored instantly after, whether the call succeeds or fails
-
----
-
-## 🔁 Context-Aware Incremental Summaries
-
-This is the core innovation. The summarizer prompt receives:
-
-| Variable | Contents |
-|---|---|
-| `{{player_name}}` | Your active persona name |
-| `{{context_str}}` | **That layer's existing summaries** — everything already recorded |
-| `{{story_txt}}` | The new passage to summarize |
-
-The instruction: *"Summarize only necessary elements to coherently continue the Prior Context. Exclude anything already covered."*
-
-This means:
-- **Snippet 1** has to establish characters, setting, relationships (~80–100 tokens)
-- **Snippet 5** only records new events — characters and setting are established (~50–70 tokens)
-- **Snippet 10** is pure narrative delta — just what changed (~30–50 tokens)
-- **Layer promotions** work the same way — each deeper layer summarizes against its own existing content
-
-Every summary is a **minimal diff**, not a redundant recap.
-
----
-
-## 🛡️ Resilient API Handling
-
-- **Exponential backoff** with jitter for rate limits (429) and server errors (500/502/503/504)
-- **Retry-After header** respected when the server provides one
-- Retries up to 5 times with delays from 2s → 60s
-- **Failed batches are never ghosted** — turns stay visible for the next attempt
-- Network errors, timeouts, and empty responses are all handled gracefully
-
----
-
-## 📦 Backlog Detection
-
-Opening an existing chat with 100+ messages? Summaryception detects the backlog and offers you a choice:
-
-| Option | What it does |
-|---|---|
-| **Process Entire Backlog** | Summarizes everything with a cancelable progress bar |
-| **Skip Backlog** | Ignores old turns, only tracks new ones going forward |
-| **Just One Batch** | Processes a single batch now, handles the rest incrementally |
-
-Progress is saved continuously — cancel anytime and pick up where you left off.
-
----
-
-## ⚙️ Configuration
-
-All settings are adjustable from the SillyTavern Extensions panel:
-
-| Setting | Default | Description |
-|---|---|---|
-| Verbatim Turns | 10 | Recent assistant turns kept word-for-word |
-| Turns per Batch | 3 | Oldest turns summarized together per trigger |
-| Snippets per Layer | 30 | Max snippets before promoting to next layer |
-| Snippets per Promotion | 3 | How many snippets merge on promotion |
-| Max Layers | 5 | Maximum recursion depth |
-
-### Prompt Presets
-
-| Preset | Best For | Focus |
-|---|---|---|
-| **Narrative State** (default) | Character RP, drama, thrillers, romance | Interactions, emotions, relationships, atmosphere, subtext |
-| **Game State** | Roguelites, strategy, mechanical games | Plot points, quests, locations, interactables, state changes |
-| **Custom** | Your own prompt | Whatever you write |
-
-Select a preset from the dropdown in Summary Prompts, or edit the prompt directly — it auto-switches to Custom.
-
-Plus fully customizable:
-- 📝 Summarizer system prompt
-- 📝 Summarizer user prompt (with `{{player_name}}`, `{{context_str}}`, `{{story_txt}}` variables)
-- 📝 Injection wrapper template
-
----
-
-## 🔌 Connection Settings
-
-Summaryception can use different backends for summarization, independent of your main chat connection:
-
-| Source | Description |
-|---|---|
-| **Default** | Uses SillyTavern's active connection — simplest setup |
-| **OpenAI Compatible** | Direct endpoint with URL, API key, and model — bypasses all ST formatting |
-| **Ollama** | Local Ollama instance with model browser |
-| **Connection Profile** | Uses an ST Connection Profile (⚠️ inherits preset formatting — may degrade summary quality) |
-
-> 💡 **Recommended:** Use **Default** or **OpenAI Compatible** for cleanest results. Connection Profiles inject preset formatting into summary requests, which can cause the model to roleplay instead of summarize.
-
----
-
-## 🗂️ Built-in Tools
-
-- **Layer Stats** — Live view of snippet counts per layer and ghosted message count
-- **Injection Preview** — See exactly what gets sent to the LLM
-- **Snippet Browser** — Browse, edit, regenerate, and delete individual snippets across all layers
-- **Export/Import** — Save and restore memory as JSON
-- **Force Summarize** — Manually trigger summarization
-- **Stop** — Abort any running summarization, progress saved
-- **Repair** — Find and fix orphaned hidden messages
-- **Slash Commands** — `/sc-status`, `/sc-preview`, `/sc-clear`
-
----
-
-## 📥 Installation
-
-### Requirements
-
-- **SillyTavern 1.16.0+** (release or staging). Older versions use an incompatible `generateRaw` signature and will not work correctly.
-
-### From SillyTavern UI
-1. Open **Extensions** → **Install Extension**
-2. Paste: `https://github.com/Lodactio/Extension-Summaryception`
-3. Click Install
-4. Find **🧠 Summaryception** in Extensions settings
-
-### Manual
 ```bash
 cd SillyTavern/data/default-user/extensions/third-party/
-git clone https://github.com/Lodactio/Extension-Summaryception
+git clone https://github.com/kaikaisadc/Extension-Summaryception
 ```
-Restart SillyTavern and enable the extension.
+
+重启 SillyTavern，然后在扩展设置中启用。
 
 ---
 
-## 🧠 Why This Works Better
+## 从原版或其他分支切换
 
-| | Traditional Summary | Summaryception |
-|---|---|---|
-| **Compression** | ~10:1, lossy | ~125:1 per snippet, lossless |
-| **Context at turn 100** | 30k+ tokens or truncated | ~10k tokens |
-| **Context at turn 1,000** | Impossible without truncation | ~13k tokens |
-| **Context at turn 10,000** | Literally impossible | ~16k tokens |
-| **Lost information** | Lots — hedged by keeping more raw turns | None — every state change is tracked |
-| **Coherence over time** | Degrades as context grows | Stable indefinitely |
-| **Works with budget models** | Poorly — needs powerful summarizer | Excellently — prompt does the heavy lifting |
+Summaryception 的多个分支使用**相同的内部模块名** `summaryception`，因此：
+
+- **不要同时启用本 fork 和原版（或其他 Summaryception 分支）**，否则设置、摘要记忆和消息隐藏状态可能互相干扰。
+- 切换前先**导出当前聊天的记忆**（设置面板中的“导出记忆”），并导出/备份聊天文件和 SillyTavern 设置。
+- 切换到本 fork 后，如需要，再用“导入记忆”恢复摘要；导入前建议先确认当前聊天与导出时是同一份。
+- 如果你的原版里已有重要摘要，先保留原目录或导出的 JSON，确认新版本工作正常后再清理。
 
 ---
 
-## Community Forks
+## 使用
 
-These forks extend Summaryception with specialized features. They use the same internal module name, so **install only one at a time** — your existing settings and per-chat memory will carry over.
+1. 在扩展设置中勾选 **启用 Summaryception**。
+2. 选择摘要使用的连接（见下一节），再按需要调整“原文保留轮次”“每批摘要轮次数”“每层最大片段数”等参数。
+3. 正常聊天。超过原文保留窗口的旧助手轮次会被摘要，并从模型上下文中隐藏。
+4. 可在“摘要片段浏览器”中检查、编辑或重新生成片段；在“注入预览”中确认实际会发送的内容。
+5. 如果积压很多，扩展会弹出补摘要对话框；处理过程中可以随时停止，进度会保存。
 
-### [Per-Character Memory Banks](https://github.com/dogoo9/Extension-Summaryception) by dogoo9
+### 设置项简述
 
-Keeps separate summary memory for each character card in the same chat. Useful for group chats or stories where you switch between characters and don't want their memories bleeding together.
+| 设置 | 作用 |
+|---|---|
+| 启用 Summaryception | 总开关 |
+| 暂停摘要 | 停止处理新轮次，但继续注入已有摘要 |
+| 禁用消息隐藏 | 仍然摘要并从模型上下文排除，但不在界面上隐藏消息 |
+| 保留的原文助手轮次 | 最近多少条助手消息按原文发送 |
+| 每批摘要轮次数 | 每次触发时把多少条最旧轮次合并摘要 |
+| 每层最大片段数 | 某层超过该数量后开始向更深层提升 |
+| 每次提升的片段数 | 每次提升时合并多少个旧片段 |
+| 最大层数 | 允许的递归层数上限 |
+| 摘要提示词 | 系统提示词、用户提示词、注入包装模板；预设可选叙事状态/游戏状态/自定义 |
+| 清理模式 | 从摘要输出中移除的标签或前缀，每行一个 |
+| 调试/跟踪模式 | 输出更详细的控制台日志，供排查问题 |
 
-### [Lorebook Ingestion](https://github.com/jeromehbonaparte-star/Extension-Summaryception-Lorebook) by Romuromylus
-
-Automatically extracts stable facts (character traits, locations, items) from summaries and proposes them as World Info entries. Summaries handle events and state changes; lorebook entries handle things that should never be forgotten across layers. Includes a review queue so nothing gets written without your approval.
-
-### [Verdash's Summaryception](https://github.com/vadash/Extension-Summaryception) By Verdash
-
-Highly Polished Summaryception with many requested features by the community and superior context management.
+具体默认值以设置面板显示为准。
 
 ---
 
-## 🤝 Credits
+## 连接设置
 
-Built with frustration at context limits and love for long-form roleplay.
+摘要请求可以与主聊天使用不同的连接：
 
-If this saves your 500-turn adventure from amnesia, consider starring the repo. ⭐
+| 来源 | 说明 |
+|---|---|
+| **默认（主 API）** | 使用 SillyTavern 当前连接，配置最简单 |
+| **OpenAI 兼容** | 直接填写端点 URL、API 密钥和模型名；支持流式响应 |
+| **Ollama（本地）** | 连接本地 Ollama，可刷新模型列表 |
+| **连接配置** | 使用 SillyTavern 已保存的连接配置；可能继承预设格式，进而影响摘要质量 |
+
+注意事项：
+
+- 本地 Ollama 或本地 OpenAI 兼容端点通常需要在 SillyTavern 的 `config.yaml` 中设置 `enableCorsProxy: true`，或在 Ollama 侧设置 `OLLAMA_ORIGINS=*`。
+- 云 API（例如 OpenRouter）一般不需要 CORS 代理。
+- API 密钥会随扩展设置保存在 SillyTavern 的数据目录中，请自行保护好该目录。
+- 如果遇到 `max_tokens > 4096 must have stream=true` 一类错误，可在“摘要响应长度”中调整上限；推理模型还需要为思考过程留出足够 token。
 
 ---
 
-## 📄 License
+## 提示词与翻译范围
 
-AGPL-3.0
+本分支**有意不翻译**以下内容，以保持与上游一致的行为：
+
+- `summarizerSystemPrompt`（摘要系统提示词）
+- `summarizerUserPrompt` 及 `narrative` / `gamestate` 预设（摘要用户提示词）
+- `injectionTemplate`（注入包装模板）
+- 连接测试使用的内部测试提示词
+- 插值变量 `{{player_name}}`、`{{context_str}}`、`{{story_txt}}`、`{{summary}}`
+
+设置面板中的提示词编辑框仍可编辑；如果你自行改成中文或别的写法，那属于自定义修改，效果由你自行承担。
+
+---
+
+## 数据与兼容性
+
+- 每个聊天的摘要保存在聊天元数据中，消息上会带有 `sc_ghosted` 标记；不要手动编辑这些字段。
+- 本扩展通过 SillyTavern 的 `/hide`、`/unhide` 命令工作；其他也会修改消息可见性的扩展可能产生交互影响。
+- 与其他使用 `summaryception` 模块名的分支**不能同时启用**。
+- 本分支未对具体模型、API 提供商或长聊天做性能基准测试；请以实际使用效果为准。
+
+---
+
+## 许可证与版权
+
+- 上游作者：**Lodactio**
+- 上游仓库：<https://github.com/Lodactio/Extension-Summaryception>
+- 许可证：**AGPL-3.0**，完整文本见 [LICENSE](LICENSE)（未修改）。
+- 本简体中文 fork：<https://github.com/kaikaisadc/Extension-Summaryception>
+
+本分支是非官方翻译，与上游作者无隶属关系。原项目版权归原作者所有；本分支的修改同样按 AGPL-3.0 发布。

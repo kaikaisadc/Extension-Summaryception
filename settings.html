@@ -1,7 +1,7 @@
 <div class="sc-settings">
     <div class="inline-drawer">
         <div class="inline-drawer-toggle inline-drawer-header">
-            <b>🧠 Summaryception</b>
+            <b>🧠 Summaryception 分层摘要</b>
             <div class="inline-drawer-icon fa-solid fa-circle-chevron-down down"></div>
         </div>
         <div class="inline-drawer-content">
@@ -10,7 +10,7 @@
             <div class="sc-row">
                 <label class="checkbox_label" for="sc_enabled">
                     <input type="checkbox" id="sc_enabled" />
-                    <span>Enable Summaryception</span>
+                    <span>启用 Summaryception</span>
                 </label>
             </div>
 
@@ -18,64 +18,64 @@
             <div class="sc-row">
                 <label class="checkbox_label" for="sc_pause_summarization">
                     <input type="checkbox" id="sc_pause_summarization" />
-                    <span>Pause Summarization</span>
-                    <small class="sc-hint">Stop processing new turns while keeping existing summaries injected. Preserves prompt cache hits. Unpause or use Force Summarize to catch up.</small>
+                    <span>暂停摘要</span>
+                    <small class="sc-hint">停止处理新的对话轮次，但继续注入已有摘要。这样可保留提示词缓存命中。取消暂停或使用“立即强制摘要”来补上进度。</small>
                 </label>
             </div>
 
             <!-- ═══ Stop hiding verbatim turns ═══ -->
             <label class="checkbox_label" for="sc_disable_ghosting">
                 <input type="checkbox" id="sc_disable_ghosting" />
-                <span>Disable Message Hiding</span>
-                <small class="sc-hint">Messages will still be summarized and excluded from LLM context, but won't be visually hidden. Useful for compatibility with other extensions (QVink, MemoryBooks, etc.).</small>
+                <span>禁用消息隐藏</span>
+                <small class="sc-hint">消息仍会被摘要并从 LLM 上下文中排除，但不会在界面上隐藏。适用于需要与其他扩展（QVink、MemoryBooks 等）兼容的情况。</small>
             </label>
 
             <!-- ═══ Actions ═══ -->
             <div class="sc-button-row">
                 <button id="sc_force_summarize" class="menu_button">
-                    <i class="fa-solid fa-bolt"></i> Force Summarize Now
+                    <i class="fa-solid fa-bolt"></i> 立即强制摘要
                 </button>
                 <button id="sc_stop_summarize" class="menu_button menu_button_danger">
-                    <i class="fa-solid fa-stop"></i> Stop
+                    <i class="fa-solid fa-stop"></i> 停止
                 </button>
                 <button id="sc_repair" class="menu_button">
-                    <i class="fa-solid fa-wrench"></i> Repair Orphans
+                    <i class="fa-solid fa-wrench"></i> 修复孤立消息
                 </button>
             </div>
 
             <hr class="sc-divider" />
 
             <!-- ═══ Snippet Browser ═══ -->
-            <h4 class="sc-section-title">🗂️ Snippet Browser</h4>
+            <h4 class="sc-section-title">🗂️ 摘要片段浏览器</h4>
             <div id="sc_snippet_browser" class="sc-snippet-browser"></div>
 
             <hr class="sc-divider" />
 
             <!-- ═══ Preview ═══ -->
-            <h4 class="sc-section-title">👁️ Injection Preview</h4>
+            <h4 class="sc-section-title">👁️ 注入预览</h4>
             <textarea id="sc_preview" class="text_pole sc-textarea sc-preview" rows="6" readonly></textarea>
             <div class="sc-button-row">
                 <button id="sc_refresh_preview" class="menu_button">
-                    <i class="fa-solid fa-rotate"></i> Refresh
+                    <i class="fa-solid fa-rotate"></i> 刷新
                 </button>
             </div>
 
             <div class="sc-button-row">
                 <button id="sc_import" class="menu_button">
-                   <i class="fa-solid fa-download"></i> Import Memory
+                   <i class="fa-solid fa-download"></i> 导入记忆
                 </button>
                 <button id="sc_export" class="menu_button">
-                    <i class="fa-solid fa-upload"></i> Export Memory
+                    <i class="fa-solid fa-upload"></i> 导出记忆
                 </button>
                 <button id="sc_clear_memory" class="menu_button menu_button_danger">
-                    <i class="fa-solid fa-trash"></i> Clear Memory
+                    <i class="fa-solid fa-trash"></i> 清空记忆
                 </button>
             </div>
 
             <hr class="sc-divider" />
 
             <!-- ═══ Layer Stats ═══ -->
-            <h4 class="sc-section-title">📊 Layer Stats</h4>
+            <h4 class="sc-section-title">📊 分层统计</h4>
             <div id="sc_layer_stats" class="sc-stats-box"></div>
 
             <hr class="sc-divider" />
@@ -83,7 +83,7 @@
             <!-- ═══ Advanced Settings ═══ -->
             <div class="inline-drawer">
                 <div class="inline-drawer-toggle inline-drawer-header">
-                    <b>⚙️ Advanced Settings</b>
+                    <b>⚙️ 高级设置</b>
                     <div class="inline-drawer-icon fa-solid fa-circle-chevron-down down"></div>
                 </div>
                 <div class="inline-drawer-content">
@@ -96,31 +96,30 @@
                         <hr class="sysHR">
                         <div class="summaryception-section-header">
                             <span class="fa-solid fa-bolt"></span>
-                            <span>Summarizer Connection</span>
+                            <span>摘要模型连接</span>
                         </div>
                         <small class="summaryception-help-text">
-                            Choose which LLM connection to use for summarization. Use a cheaper/faster model
-                            to save costs while keeping your main API for RP.
+                            选择用于摘要的 LLM 连接。可以使用更便宜、更快的模型来节省费用，同时把主 API 留给角色扮演。
                         </small>
 
                         <div class="summaryception-setting-row">
                             <label for="sc_summarizer_response_length">
-                                <span>Summarizer Response Length</span>
-                                <small>Override max response tokens for summarizer calls (Default/Profile modes). 0 = use your preset's value. If you get "max_tokens > 4096 must have stream=true" errors, set to 4096. For reasoning models, ensure this is high enough for thinking + output.</small>
+                                <span>摘要响应长度</span>
+                                <small>覆盖摘要调用（默认/连接配置模式）的最大响应 token 数。0 = 使用预设值。如果遇到 “max_tokens > 4096 must have stream=true” 错误，请设为 4096。对于推理模型，请确保该值足够容纳思考过程和输出。</small>
                             </label>
-                            <input id="sc_summarizer_response_length" type="number" class="text_pole" min="0" step="100" value="0" placeholder="0 = use preset default" />
+                            <input id="sc_summarizer_response_length" type="number" class="text_pole" min="0" step="100" value="0" placeholder="0 = 使用预设默认值" />
                         </div>
 
                         <!-- Connection Source Selector -->
                         <div class="summaryception-setting-row">
                             <label for="summaryception_connection_source">
-                                <span>Connection Source</span>
+                                <span>连接来源</span>
                             </label>
                             <select id="summaryception_connection_source" class="text_pole">
-                                <option value="default">Default (Main API)</option>
-                                <option value="profile">Connection Profile</option>
-                                <option value="ollama">Ollama (Local)</option>
-                                <option value="openai">OpenAI Compatible</option>
+                                <option value="default">默认（主 API）</option>
+                                <option value="profile">连接配置</option>
+                                <option value="ollama">Ollama（本地）</option>
+                                <option value="openai">OpenAI 兼容</option>
                             </select>
                         </div>
 
@@ -128,19 +127,19 @@
                         <div id="summaryception_profile_settings" class="summaryception-sub-panel" style="display: none;">
                             <div class="summaryception-setting-row">
                                 <label for="summaryception_connection_profile">
-                                    <span>Connection Profile</span>
+                                    <span>连接配置</span>
                                 </label>
                                 <select id="summaryception_connection_profile" class="text_pole">
-                                    <option value="">-- Select a Profile --</option>
+                                    <option value="">-- 选择连接配置 --</option>
                                 </select>
                             </div>
                             <div class="summaryception-note">
                                 <span class="fa-solid fa-info-circle"></span>
                                 <small>
-                                    Uses a saved SillyTavern Connection Profile. Includes endpoint, API key, model, and presets.
-                                    Requires ST 1.12.4+. For full API key support, use staging (March 2026+).
-                                    ⚠️ Connection Profiles inject preset formatting into summary requests, which may degrade summary quality.
-                                    ⚠️ Consider using Default or OpenAI Compatible instead.
+                                    使用已保存的 SillyTavern 连接配置，包含端点、API 密钥、模型和预设。
+                                    需要 ST 1.12.4+。要获得完整的 API 密钥支持，请使用 staging 版（2026 年 3 月及以后）。
+                                    ⚠️ 连接配置会将预设格式注入摘要请求，可能降低摘要质量。
+                                    ⚠️ 建议改用“默认”或“OpenAI 兼容”。
                                 </small>
                             </div>
                         </div>
@@ -156,15 +155,15 @@
                             </div>
                             <div class="summaryception-setting-row">
                                 <label for="summaryception_ollama_model">
-                                    <span>Model</span>
+                                    <span>模型</span>
                                 </label>
                                 <div class="summaryception-input-group">
                                     <select id="summaryception_ollama_model" class="text_pole">
-                                        <option value="">-- Select Model --</option>
+                                        <option value="">-- 选择模型 --</option>
                                     </select>
                                     <div id="summaryception_ollama_refresh"
                                          class="menu_button menu_button_icon"
-                                         title="Refresh model list from Ollama">
+                                         title="从 Ollama 刷新模型列表">
                                         <span class="fa-solid fa-arrows-rotate"></span>
                                     </div>
                                 </div>
@@ -172,9 +171,7 @@
                             <div class="summaryception-note">
                                 <span class="fa-solid fa-info-circle"></span>
                                 <small>
-                                    Connects to a local Ollama instance. Requires <code>enableCorsProxy: true</code> in
-                                    your SillyTavern <code>config.yaml</code>, OR set the <code>OLLAMA_ORIGINS=*</code>
-                                    environment variable on your Ollama instance.
+                                    连接到本地 Ollama 实例。需要在 SillyTavern 的 <code>config.yaml</code> 中设置 <code>enableCorsProxy: true</code>，或在 Ollama 实例上设置 <code>OLLAMA_ORIGINS=*</code> 环境变量。
                                 </small>
                             </div>
                         </div>
@@ -183,48 +180,44 @@
                         <div id="summaryception_openai_settings" class="summaryception-sub-panel" style="display: none;">
                             <div class="summaryception-setting-row">
                                 <label for="summaryception_openai_url">
-                                    <span>Endpoint URL</span>
+                                    <span>端点 URL</span>
                                 </label>
                                 <input id="summaryception_openai_url" type="text" class="text_pole"
-                                       placeholder="http://localhost:1234/v1 or https://openrouter.ai/api/v1" />
+                                       placeholder="http://localhost:1234/v1 或 https://openrouter.ai/api/v1" />
                             </div>
                             <div class="summaryception-setting-row">
                                 <label for="summaryception_openai_key">
-                                    <span>API Key</span>
+                                    <span>API 密钥</span>
                                 </label>
                                 <input id="summaryception_openai_key" type="password" class="text_pole"
-                                       placeholder="(optional, for cloud services)" autocomplete="off" />
+                                       placeholder="（可选，用于云服务）" autocomplete="off" />
                             </div>
                             <div class="summaryception-setting-row">
                                 <label for="summaryception_openai_model">
-                                    <span>Model Name</span>
+                                    <span>模型名称</span>
                                 </label>
                                 <input id="summaryception_openai_model" type="text" class="text_pole"
-                                       placeholder="e.g. gpt-4o-mini, llama-3.1-8b" />
+                                       placeholder="例如 gpt-4o-mini、llama-3.1-8b" />
                             </div>
                             <div class="summaryception-setting-row">
                                 <label for="summaryception_openai_max_tokens">
-                                    <span>Max Tokens</span>
+                                    <span>最大 Token 数</span>
                                 </label>
                                 <input id="summaryception_openai_max_tokens" type="number" class="text_pole"
-                                       min="0" step="100" placeholder="0 = no limit (provider default)" />
+                                       min="0" step="100" placeholder="0 = 不限制（使用提供商默认值）" />
                             </div>
                             <div class="summaryception-setting-row">
                                 <div id="summaryception_openai_test"
                                      class="menu_button menu_button_icon"
-                                     title="Test the OpenAI-compatible connection">
+                                     title="测试 OpenAI 兼容连接">
                                     <span class="fa-solid fa-plug-circle-check"></span>
-                                    <span>Test Connection</span>
+                                    <span>测试连接</span>
                                 </div>
                             </div>
                             <div class="summaryception-note">
                                 <span class="fa-solid fa-info-circle"></span>
                                 <small>
-                                    Works with LM Studio, KoboldCPP, vLLM, text-generation-webui, OpenRouter, or any
-                                    OpenAI-compatible endpoint. Enter the base URL up to <code>/v1</code>
-                                    (e.g. <code>http://localhost:1234/v1</code>).
-                                    Local endpoints require <code>enableCorsProxy: true</code> in <code>config.yaml</code>.
-                                    Cloud APIs (OpenRouter, etc.) work without the proxy.
+                                    适用于 LM Studio、KoboldCPP、vLLM、text-generation-webui、OpenRouter 或任何 OpenAI 兼容端点。请输入到 <code>/v1</code> 为止的基础 URL（例如 <code>http://localhost:1234/v1</code>）。本地端点需要在 <code>config.yaml</code> 中设置 <code>enableCorsProxy: true</code>。云 API（OpenRouter 等）无需代理即可使用。
                                 </small>
                             </div>
                         </div>
@@ -237,12 +230,12 @@
                     </div>
 
                     <!-- Turn Settings -->
-                    <h4 class="sc-section-title">📖 Verbatim Turn Settings</h4>
+                    <h4 class="sc-section-title">📖 原文保留轮次设置</h4>
 
                     <div class="sc-row">
                         <label for="sc_verbatim_turns">
-                            <span>Verbatim Assistant Turns to Keep</span>
-                            <small class="sc-hint">Recent assistant turns sent word-for-word. Older ones are summarized.</small>
+                            <span>保留的原文助手轮次</span>
+                            <small class="sc-hint">最近这些助手轮次会逐字发送，更早的轮次会被摘要。</small>
                         </label>
                         <div class="sc-slider-row">
                             <input type="range" id="sc_verbatim_turns" min="1" max="50" step="1" />
@@ -252,8 +245,8 @@
 
                     <div class="sc-row">
                         <label for="sc_turns_per_summary">
-                            <span>Turns per Summary Batch</span>
-                            <small class="sc-hint">When limit is exceeded, this many oldest turns are summarized together into one snippet.</small>
+                            <span>每批摘要轮次数</span>
+                            <small class="sc-hint">超过限制时，将最旧的这么多轮次合并摘要为一个片段。</small>
                         </label>
                         <div class="sc-slider-row">
                             <input type="range" id="sc_turns_per_summary" min="1" max="20" step="1" />
@@ -264,12 +257,12 @@
                     <hr class="sc-divider" />
 
                     <!-- Layer Settings -->
-                    <h4 class="sc-section-title">🔄 Layer Settings (the "ception")</h4>
+                    <h4 class="sc-section-title">🔄 分层设置（“ception”递归层）</h4>
 
                     <div class="sc-row">
                         <label for="sc_snippets_per_layer">
-                            <span>Max Snippets per Layer</span>
-                            <small class="sc-hint">When exceeded, oldest snippets are promoted (re-summarized) into a deeper layer.</small>
+                            <span>每层最大片段数</span>
+                            <small class="sc-hint">超过限制后，最旧的片段会被提升（再次摘要）到更深一层。</small>
                         </label>
                         <div class="sc-slider-row">
                             <input type="range" id="sc_snippets_per_layer" min="3" max="100" step="1" />
@@ -279,8 +272,8 @@
 
                     <div class="sc-row">
                         <label for="sc_snippets_per_promotion">
-                            <span>Snippets per Promotion</span>
-                            <small class="sc-hint">How many oldest snippets merge together when promoting to the next layer.</small>
+                            <span>每次提升的片段数</span>
+                            <small class="sc-hint">提升到下一层时，合并多少个最旧的片段。</small>
                         </label>
                         <div class="sc-slider-row">
                             <input type="range" id="sc_snippets_per_promotion" min="2" max="20" step="1" />
@@ -290,8 +283,8 @@
 
                     <div class="sc-row">
                         <label for="sc_max_layers">
-                            <span>Maximum Layer Depth</span>
-                            <small class="sc-hint">How many recursive layers of summarization are allowed.</small>
+                            <span>最大层数</span>
+                            <small class="sc-hint">允许的递归摘要层数。</small>
                         </label>
                         <div class="sc-slider-row">
                             <input type="range" id="sc_max_layers" min="1" max="10" step="1" />
@@ -302,23 +295,23 @@
                     <hr class="sc-divider" />
 
                     <!-- Prompts -->
-                    <h4 class="sc-section-title">✏️ Summarizer Prompts</h4>
+                    <h4 class="sc-section-title">✏️ 摘要提示词</h4>
 
                     <div class="sc-row">
                         <label for="sc_summarizer_system_prompt">
-                            <span>System Prompt</span>
+                            <span>系统提示词</span>
                         </label>
                         <textarea id="sc_summarizer_system_prompt" class="text_pole sc-textarea" rows="3"></textarea>
                     </div>
 
                     <div class="sc-setting-item">
                         <label for="sc_prompt_preset">
-                            <small>Prompt Preset</small>
+                            <small>提示词预设</small>
                         </label>
                         <select id="sc_prompt_preset" class="text_pole">
-                            <option value="narrative">Narrative State (Default)</option>
-                            <option value="gamestate">Game State</option>
-                            <option value="custom">Custom</option>
+                            <option value="narrative">叙事状态（默认）</option>
+                            <option value="gamestate">游戏状态</option>
+                            <option value="custom">自定义</option>
                         </select>
                     </div>
 
@@ -327,33 +320,33 @@
                         <div class="sc-custom-prompt-row">
                             <div class="sc-custom-prompt-slots">
                                 <label for="sc_custom_prompt_slot">
-                                    <small>Saved Custom Prompts</small>
+                                    <small>已保存的自定义提示词</small>
                                 </label>
                                 <div class="sc-custom-prompt-slot-row">
                                     <select id="sc_custom_prompt_slot" class="text_pole">
-                                        <option value="">-- Load a saved prompt --</option>
+                                        <option value="">-- 加载已保存的提示词 --</option>
                                     </select>
-                                    <button id="sc_custom_prompt_load" class="menu_button" title="Load selected prompt">
+                                    <button id="sc_custom_prompt_load" class="menu_button" title="加载所选提示词">
                                         <i class="fa-solid fa-folder-open"></i>
                                     </button>
-                                    <button id="sc_custom_prompt_delete_slot" class="menu_button menu_button_danger" title="Delete selected prompt">
+                                    <button id="sc_custom_prompt_delete_slot" class="menu_button menu_button_danger" title="删除所选提示词">
                                         <i class="fa-solid fa-trash"></i>
                                     </button>
                                 </div>
                             </div>
                             <div class="sc-custom-prompt-actions">
                                 <div class="sc-custom-prompt-save-row">
-                                    <input id="sc_custom_prompt_name" type="text" class="text_pole" placeholder="Prompt name..." />
-                                    <button id="sc_custom_prompt_save" class="menu_button" title="Save current prompt">
-                                        <i class="fa-solid fa-floppy-disk"></i> Save
+                                    <input id="sc_custom_prompt_name" type="text" class="text_pole" placeholder="提示词名称…" />
+                                    <button id="sc_custom_prompt_save" class="menu_button" title="保存当前提示词">
+                                        <i class="fa-solid fa-floppy-disk"></i> 保存
                                     </button>
                                 </div>
                                 <div class="sc-custom-prompt-io-row">
-                                    <button id="sc_custom_prompt_export" class="menu_button" title="Export current prompt as .txt">
-                                        <i class="fa-solid fa-file-export"></i> Export
+                                    <button id="sc_custom_prompt_export" class="menu_button" title="将当前提示词导出为 .txt">
+                                        <i class="fa-solid fa-file-export"></i> 导出
                                     </button>
-                                    <button id="sc_custom_prompt_import" class="menu_button" title="Import prompt from .txt">
-                                        <i class="fa-solid fa-file-import"></i> Import
+                                    <button id="sc_custom_prompt_import" class="menu_button" title="从 .txt 导入提示词">
+                                        <i class="fa-solid fa-file-import"></i> 导入
                                     </button>
                                 </div>
                             </div>
@@ -362,9 +355,9 @@
 
                     <div class="sc-row">
                         <label for="sc_summarizer_user_prompt">
-                            <span>User Prompt (Turn → Snippet & Layer Promotion)</span>
+                            <span>用户提示词（轮次 → 片段及分层提升）</span>
                             <small class="sc-hint">
-                                Variables: <code>{{player_name}}</code> <code>{{context_str}}</code> (that layer's existing snippets) <code>{{story_txt}}</code> (passage to summarize)
+                                变量：<code>{{player_name}}</code> <code>{{context_str}}</code>（该层已有片段） <code>{{story_txt}}</code>（待摘要的段落）
                             </small>
                         </label>
                         <textarea id="sc_summarizer_user_prompt" class="text_pole sc-textarea sc-textarea-tall" rows="10"></textarea>
@@ -372,8 +365,8 @@
 
                     <div class="sc-row">
                         <label for="sc_injection_template">
-                            <span>Injection Wrapper Template</span>
-                            <small class="sc-hint">Wraps the assembled block. Use <code>{{summary}}</code> for the combined text.</small>
+                            <span>注入包装模板</span>
+                            <small class="sc-hint">包裹组装后的内容块。使用 <code>{{summary}}</code> 表示合并后的文本。</small>
                         </label>
                         <textarea id="sc_injection_template" class="text_pole sc-textarea" rows="3"></textarea>
                     </div>
@@ -383,8 +376,8 @@
                     <!-- Strip Patterns -->
                     <div class="sc-row">
                         <label for="sc_strip_patterns">
-                            <span>Strip Patterns (one per line)</span>
-                            <small class="sc-hint">Tags and prefixes to remove from summarizer output. Handles reasoning model artifacts.</small>
+                            <span>清理模式（每行一个）</span>
+                            <small class="sc-hint">要从摘要输出中移除的标签和前缀，用于处理推理模型产生的残留内容。</small>
                         </label>
                         <textarea id="sc_strip_patterns" class="text_pole sc-textarea" rows="4"></textarea>
                     </div>
@@ -395,16 +388,16 @@
                     <div class="sc-row">
                         <label class="checkbox_label" for="sc_debug_mode">
                             <input type="checkbox" id="sc_debug_mode" />
-                            <span>Debug Mode (verbose console logs)</span>
+                            <span>调试模式（详细控制台日志）</span>
                         </label>
                     </div>
 
                     <div class="sc-row">
                         <label class="checkbox_label" for="sc_trace_mode">
                             <input type="checkbox" id="sc_trace_mode" />
-                            <span>Trace Mode (detailed flow logs)</span>
+                            <span>跟踪模式（详细流程日志）</span>
                         </label>
-                        <small class="sc-hint">Requires Debug Mode to be enabled.</small>
+                        <small class="sc-hint">需要先启用调试模式。</small>
                     </div>
 
                     <hr class="sc-divider" />
@@ -412,7 +405,7 @@
                     <!-- Reset defaults -->
                     <div class="sc-button-row">
                         <button id="sc_reset_defaults" class="menu_button">
-                            <i class="fa-solid fa-arrow-rotate-left"></i> Reset to Defaults
+                            <i class="fa-solid fa-arrow-rotate-left"></i> 恢复默认设置
                         </button>
                     </div>
 

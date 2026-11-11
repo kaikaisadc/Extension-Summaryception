@@ -1,5 +1,6 @@
 {
-    "display_name": "Summaryception",
+    "display_name": "Summaryception（分层摘要）",
+    "description": "为 SillyTavern 提供分层递归摘要记忆：保留最近轮次的原文，把更早的对话压缩为多层摘要片段，并以非破坏方式从模型上下文中排除已摘要消息。",
     "loading_order": 50,
     "requires": [],
     "optional": [],

@@ -111,7 +111,7 @@ async function sendViaDefault(systemPrompt, userPrompt, responseLength) {
 
     if (!generateRaw) {
         throw new ConnectionError(
-            'generateRaw is not available in the current SillyTavern context.',
+            '当前 SillyTavern 上下文中没有可用的 generateRaw。',
             { retryable: false }
         );
     }
@@ -152,7 +152,7 @@ async function sendViaDefault(systemPrompt, userPrompt, responseLength) {
 
     if (!result || typeof result !== 'string') {
         throw new ConnectionError(
-            'generateRaw returned an empty or invalid response.',
+            'generateRaw 返回了空响应或无效响应。',
             { retryable: true }
         );
     }
@@ -175,7 +175,7 @@ async function sendViaDefault(systemPrompt, userPrompt, responseLength) {
 async function sendViaProfile(profileId, systemPrompt, userPrompt) {
     if (!profileId) {
         throw new ConnectionError(
-            'No Connection Profile selected. Please select one in Summaryception settings.',
+            '未选择连接配置。请在 Summaryception 设置中选择一个。',
             { retryable: false }
         );
     }
@@ -185,16 +185,16 @@ async function sendViaProfile(profileId, systemPrompt, userPrompt) {
 
     if (!service) {
         throw new ConnectionError(
-            'ConnectionManagerRequestService is not available. ' +
-            'Your SillyTavern version may be too old. Requires ST with PR #3603 (March 2025+).',
+            'ConnectionManagerRequestService 不可用。' +
+            '你的 SillyTavern 版本可能过旧。需要包含 PR #3603 的 ST（2025 年 3 月及以后）。',
                                   { retryable: false }
         );
     }
 
     if (typeof service.sendRequest !== 'function') {
         throw new ConnectionError(
-            'ConnectionManagerRequestService.sendRequest() is not available. ' +
-            'Please update SillyTavern to the latest staging version.',
+            'ConnectionManagerRequestService.sendRequest() 不可用。' +
+            '请将 SillyTavern 更新到最新的 staging 版本。',
             { retryable: false }
         );
     }
@@ -231,21 +231,21 @@ async function sendViaProfile(profileId, systemPrompt, userPrompt) {
             const str = JSON.stringify(raw);
             console.warn('[Summaryception][Connection] Unexpected return type from sendRequest:', str.substring(0, 500));
             throw new ConnectionError(
-                `Connection Profile returned unexpected type: ${typeof raw}. ` +
-                `Preview: ${str.substring(0, 200)}. ` +
-                `Please report this on the Summaryception GitHub.`,
+                `连接配置返回了意外的类型：${typeof raw}。` +
+                `预览：${str.substring(0, 200)}。` +
+                `请在 Summaryception 的 GitHub 仓库报告此问题。`,
                 { retryable: false }
             );
         } else {
             throw new ConnectionError(
-                'Connection Profile returned an empty or invalid response.',
+                '连接配置返回了空响应或无效响应。',
                 { retryable: true }
             );
         }
 
         if (!result || !result.trim()) {
             throw new ConnectionError(
-                'Connection Profile returned an empty response.',
+                '连接配置返回了空响应。',
                 { retryable: true }
             );
         }
@@ -260,23 +260,23 @@ async function sendViaProfile(profileId, systemPrompt, userPrompt) {
 
         if (status === 401 || msg.includes('401') || msg.toLowerCase().includes('unauthorized')) {
             throw new ConnectionError(
-                `Connection Profile auth failed (401). This is likely the API key switching bug ` +
-                `(ST Issue #5348). Update SillyTavern to staging (March 30, 2026+) to fix this. ` +
-                `Original error: ${msg}`,
+                `连接配置认证失败（401）。这很可能是 API 密钥切换 bug ` +
+                `（ST Issue #5348）。请将 SillyTavern 更新到 staging 版（2026 年 3 月 30 日及以后）以修复此问题。` +
+                `原始错误：${msg}`,
                 { retryable: false, status: 401 }
             );
         }
 
         if (msg.includes('not found') || msg.includes('profile')) {
             throw new ConnectionError(
-                `Connection Profile "${profileId}" not found. It may have been deleted. ` +
-                `Please re-select a profile in Summaryception settings.`,
+                `未找到连接配置“${profileId}”。它可能已被删除。` +
+                `请在 Summaryception 设置中重新选择连接配置。`,
                 { retryable: false, status: 404 }
             );
         }
 
         throw new ConnectionError(
-            `Connection Profile request failed: ${msg}`,
+            `连接配置请求失败：${msg}`,
             { retryable: true, status: status }
         );
     }
@@ -291,13 +291,13 @@ async function sendViaProfile(profileId, systemPrompt, userPrompt) {
 async function sendViaOllama(url, model, systemPrompt, userPrompt) {
     if (!url) {
         throw new ConnectionError(
-            'Ollama URL is not configured. Please set it in Summaryception settings.',
+            '未配置 Ollama URL。请在 Summaryception 设置中填写。',
             { retryable: false }
         );
     }
     if (!model) {
         throw new ConnectionError(
-            'Ollama model is not selected. Please select one in Summaryception settings.',
+            '未选择 Ollama 模型。请在 Summaryception 设置中选择一个。',
             { retryable: false }
         );
     }
@@ -343,18 +343,18 @@ async function sendViaOllama(url, model, systemPrompt, userPrompt) {
             });
         } catch (directError) {
             throw new ConnectionError(
-                `Failed to connect to Ollama at ${baseUrl}. ` +
-                `CORS proxy error: ${proxyError.message}. Direct error: ${directError.message}. ` +
-                `Make sure enableCorsProxy is set to true in config.yaml, or set OLLAMA_ORIGINS=* on your Ollama instance.`,
+                `无法连接到 ${baseUrl} 上的 Ollama。` +
+                `CORS 代理错误：${proxyError.message}。直连错误：${directError.message}。` +
+                `请确保 config.yaml 中 enableCorsProxy 设为 true，或在 Ollama 实例上设置 OLLAMA_ORIGINS=*。`,
                 { retryable: true }
             );
         }
     }
 
     if (!response.ok) {
-        const errorText = await response.text().catch(() => 'Unknown error');
+        const errorText = await response.text().catch(() => '未知错误');
         throw new ConnectionError(
-            `Ollama request failed (${response.status}): ${errorText}`,
+            `Ollama 请求失败（${response.status}）：${errorText}`,
                                   { retryable: response.status >= 500, status: response.status }
         );
     }
@@ -363,7 +363,7 @@ async function sendViaOllama(url, model, systemPrompt, userPrompt) {
 
     if (!data?.message?.content) {
         throw new ConnectionError(
-            'Ollama returned an empty or invalid response.',
+            'Ollama 返回了空响应或无效响应。',
             { retryable: true }
         );
     }
@@ -378,7 +378,7 @@ async function sendViaOllama(url, model, systemPrompt, userPrompt) {
  */
 export async function fetchOllamaModels(url) {
     if (!url) {
-        throw new Error('Ollama URL is not configured.');
+        throw new Error('未配置 Ollama URL。');
     }
 
     const baseUrl = url.replace(/\/+$/, '');
@@ -399,22 +399,22 @@ export async function fetchOllamaModels(url) {
             });
         } catch (directError) {
             throw new Error(
-                `Failed to connect to Ollama at ${baseUrl}. ` +
-                `Enable the CORS proxy in config.yaml (enableCorsProxy: true) or set OLLAMA_ORIGINS=* on your Ollama instance. ` +
-                `Proxy error: ${proxyError.message}. Direct error: ${directError.message}`
+                `无法连接到 ${baseUrl} 上的 Ollama。` +
+                `请在 config.yaml 中启用 CORS 代理（enableCorsProxy: true），或在 Ollama 实例上设置 OLLAMA_ORIGINS=*。` +
+                `代理错误：${proxyError.message}。直连错误：${directError.message}`
             );
         }
     }
 
     if (!response.ok) {
-        const errorText = await response.text().catch(() => 'Unknown error');
-        throw new Error(`Failed to fetch Ollama models (${response.status}): ${errorText}`);
+        const errorText = await response.text().catch(() => '未知错误');
+        throw new Error(`获取 Ollama 模型失败（${response.status}）：${errorText}`);
     }
 
     const data = await response.json();
 
     if (!data?.models || !Array.isArray(data.models)) {
-        throw new Error('Unexpected response format from Ollama /api/tags.');
+        throw new Error('Ollama /api/tags 返回了意外的响应格式。');
     }
 
     return data.models;
@@ -433,13 +433,13 @@ export async function fetchOllamaModels(url) {
 async function sendViaOpenAI(url, apiKey, model, systemPrompt, userPrompt, maxTokens) {
     if (!url) {
         throw new ConnectionError(
-            'OpenAI Compatible URL is not configured. Please set it in Summaryception settings.',
+            '未配置 OpenAI 兼容 URL。请在 Summaryception 设置中填写。',
             { retryable: false }
         );
     }
     if (!model) {
         throw new ConnectionError(
-            'OpenAI Compatible model name is not set. Please enter one in Summaryception settings.',
+            '未设置 OpenAI 兼容模型名称。请在 Summaryception 设置中填写。',
             { retryable: false }
         );
     }
@@ -505,9 +505,9 @@ async function sendViaOpenAI(url, apiKey, model, systemPrompt, userPrompt, maxTo
                 });
             } catch (directError) {
                 throw new ConnectionError(
-                    `Failed to connect to ${baseUrl}. ` +
-                    `Enable the CORS proxy in config.yaml (enableCorsProxy: true). ` +
-                    `Proxy error: ${proxyError.message}. Direct error: ${directError.message}`,
+                    `无法连接到 ${baseUrl}。` +
+                    `请在 config.yaml 中启用 CORS 代理（enableCorsProxy: true）。` +
+                    `代理错误：${proxyError.message}。直连错误：${directError.message}`,
                     { retryable: true }
                 );
             }
@@ -521,28 +521,28 @@ async function sendViaOpenAI(url, apiKey, model, systemPrompt, userPrompt, maxTo
             });
         } catch (directError) {
             throw new ConnectionError(
-                `Failed to connect to ${baseUrl}: ${directError.message}`,
+                `无法连接到 ${baseUrl}：${directError.message}`,
                 { retryable: true }
             );
         }
     }
 
     if (!response.ok) {
-        const errorText = await response.text().catch(() => 'Unknown error');
+        const errorText = await response.text().catch(() => '未知错误');
         if (response.status === 401) {
             throw new ConnectionError(
-                'OpenAI Compatible endpoint returned 401 Unauthorized. Check your API key.',
+                'OpenAI 兼容端点返回 401 Unauthorized。请检查 API 密钥。',
                 { retryable: false, status: 401 }
             );
         }
         if (response.status === 403) {
             throw new ConnectionError(
-                `OpenAI Compatible endpoint returned 403 Forbidden: ${errorText}`,
+                `OpenAI 兼容端点返回 403 Forbidden：${errorText}`,
                 { retryable: false, status: 403 }
             );
         }
         throw new ConnectionError(
-            `OpenAI Compatible request failed (${response.status}): ${errorText}`,
+            `OpenAI 兼容请求失败（${response.status}）：${errorText}`,
                                   { retryable: response.status >= 500 || response.status === 429, status: response.status }
         );
     }
@@ -590,7 +590,7 @@ async function sendViaOpenAI(url, apiKey, model, systemPrompt, userPrompt, maxTo
 
     if (!fullContent.trim()) {
         throw new ConnectionError(
-            'OpenAI Compatible endpoint returned an empty response (streaming).',
+            'OpenAI 兼容端点返回了空响应（流式）。',
                                   { retryable: true }
         );
     }
@@ -617,12 +617,12 @@ export async function testOpenAIConnection(url, apiKey, model) {
         );
         return {
             success: true,
-            message: `Connection successful! Response: "${result.substring(0, LLM_DEFAULTS.testPreviewLength)}"`,
+            message: `连接成功！响应：“${result.substring(0, LLM_DEFAULTS.testPreviewLength)}”`,
         };
     } catch (error) {
         return {
             success: false,
-            message: `Connection failed: ${error.message}`,
+            message: `连接失败：${error.message}`,
         };
     }
 }
@@ -664,14 +664,14 @@ export function populateProfileDropdown(selectElement, currentValue) {
 export function getConnectionDisplayName(settings) {
     switch (settings.connectionSource) {
         case 'default':
-            return 'Default (Main API)';
+            return '默认（主 API）';
         case 'profile':
-            return `Profile: ${settings.connectionProfileId || '(none)'}`;
+            return `连接配置：${settings.connectionProfileId || '（无）'}`;
         case 'ollama':
-            return `Ollama: ${settings.ollamaModel || '(no model)'}`;
+            return `Ollama：${settings.ollamaModel || '（未选择模型）'}`;
         case 'openai':
-            return `OpenAI: ${settings.openaiModel || '(no model)'}`;
+            return `OpenAI：${settings.openaiModel || '（未选择模型）'}`;
         default:
-            return 'Default (Main API)';
+            return '默认（主 API）';
     }
 }
