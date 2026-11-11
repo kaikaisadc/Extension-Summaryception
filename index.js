@@ -1073,7 +1073,8 @@ async function summarizeOneBatch(visibleTurns) {
 
         const contextStr = buildFullContext(0);
 
-        toastr.info(`正在摘要 ${batch.length} 个轮次${batch.length > 1 ? '（多条）' : ''}…`, 'Summaryception', {
+        // 保留上游条件表达式结构；中文没有复数后缀，两个分支都输出空字符串。
+        toastr.info(`正在为 ${batch.length} 个轮次生成摘要${batch.length > 1 ? '' : ''}…`, 'Summaryception', {
             timeOut: TUNING.toastMedium,
             progressBar: true,
         });
@@ -1996,7 +1997,7 @@ function bindUIEvents() {
 
         if ($(this).prop('checked')) {
             toastr.info(
-                '已禁用消息隐藏。已摘要的消息仍会显示，但会通过 sc_ghosted 标记继续从 LLM 上下文中排除。',
+                '已禁用消息隐藏。消息仍会被摘要并标记为已处理，但不会主动隐藏，原消息可能继续发送并占用上下文。想通过隐藏节省 token，请关闭此选项。',
                 'Summaryception',
                 { timeOut: TUNING.toastLonger }
             );
