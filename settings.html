@@ -309,10 +309,15 @@
                             <small>提示词预设</small>
                         </label>
                         <select id="sc_prompt_preset" class="text_pole">
-                            <option value="narrative">叙事状态（默认）</option>
-                            <option value="gamestate">游戏状态</option>
+                            <option value="narrative">原版叙事（默认）</option>
+                            <option value="gamestate">原版游戏状态</option>
+                            <option value="original_default">原版初始提示词</option>
+                            <option value="longform">长篇剧情记忆（中文）</option>
                             <option value="custom">自定义</option>
                         </select>
+                        <small class="sc-hint">
+                            更新不会自动切换已有预设；切换预设只替换用户提示词，不改动系统提示词。新预设用于之后的摘要与层级合并，不重写已有记忆；较长摘要会增加 token 消耗。
+                        </small>
                     </div>
 
                     <!-- Custom Prompt Management -->
