@@ -47,6 +47,13 @@ class ConnectionError extends Error {
 
 export { ConnectionError };
 
+function throwIfAborted(signal) {
+    if (!signal?.aborted) return;
+    const error = new Error('Request cancelled');
+    error.name = 'AbortError';
+    throw error;
+}
+
 // ─── CORS Proxy Helper ───────────────────────────────────────────────
 
 /**
@@ -82,22 +89,24 @@ function getProxyHeaders() {
  * @param {object} settings - The extension settings containing connection config
  * @param {string} systemPrompt - The system prompt
  * @param {string} userPrompt - The user prompt
+ * @param {{signal?: AbortSignal}} options - Cancellation for the whole operation
  * @returns {Promise<string>} - The generated response text
  * @throws {ConnectionError|Error} - If the request fails
  */
-export async function sendSummarizerRequest(settings, systemPrompt, userPrompt) {
+export async function sendSummarizerRequest(settings, systemPrompt, userPrompt, { signal } = {}) {
+    throwIfAborted(signal);
     const source = settings.connectionSource || 'default';
 
     switch (source) {
         case 'profile':
-            return await sendViaProfile(settings.connectionProfileId, systemPrompt, userPrompt);
+            return await sendViaProfile(settings.connectionProfileId, systemPrompt, userPrompt, signal);
         case 'ollama':
-            return await sendViaOllama(settings.ollamaUrl, settings.ollamaModel, systemPrompt, userPrompt);
+            return await sendViaOllama(settings.ollamaUrl, settings.ollamaModel, systemPrompt, userPrompt, signal);
         case 'openai':
-            return await sendViaOpenAI(settings.openaiUrl, settings.openaiKey, settings.openaiModel, systemPrompt, userPrompt, settings.openaiMaxTokens);
+            return await sendViaOpenAI(settings.openaiUrl, settings.openaiKey, settings.openaiModel, systemPrompt, userPrompt, settings.openaiMaxTokens, signal);
         case 'default':
         default:
-            return await sendViaDefault(systemPrompt, userPrompt, settings.summarizerResponseLength);
+            return await sendViaDefault(systemPrompt, userPrompt, settings.summarizerResponseLength, signal);
     }
 }
 
@@ -106,8 +115,9 @@ export async function sendSummarizerRequest(settings, systemPrompt, userPrompt) 
 /**
  * Uses ST's built-in generateRaw(), which routes through the active connection.
  */
-async function sendViaDefault(systemPrompt, userPrompt, responseLength) {
-    const { generateRaw } = SillyTavern.getContext();
+async function sendViaDefault(systemPrompt, userPrompt, responseLength, signal) {
+    const context = SillyTavern.getContext();
+    const { generateRaw } = context;
 
     if (!generateRaw) {
         throw new ConnectionError(
@@ -126,38 +136,49 @@ async function sendViaDefault(systemPrompt, userPrompt, responseLength) {
     // the function's length (expected positional params), 0 or 1 means
     // object-style, 2+ means positional-style.
 
-    let result;
+    const onAbort = () => context.stopGeneration?.();
+    signal?.addEventListener('abort', onAbort, { once: true });
+    try {
+        throwIfAborted(signal);
+        let result;
 
-    if (generateRaw.length <= 1) {
-        // Modern ST: object-based params
-        const options = {
-            systemPrompt: systemPrompt,
-            prompt: userPrompt,
-        };
+        if (generateRaw.length <= 1) {
+            // Modern ST: object-based params
+            const options = {
+                systemPrompt: systemPrompt,
+                prompt: userPrompt,
+            };
 
-        if (responseLength && responseLength > 0) {
-            options.responseLength = responseLength;
+            if (responseLength && responseLength > 0) {
+                options.responseLength = responseLength;
+            }
+
+            result = await generateRaw(options);
+        } else {
+            // Legacy ST: positional args — generateRaw(prompt, systemPrompt)
+            // Note: legacy signature does not support responseLength override
+            console.warn(
+                '[Summaryception] Detected legacy generateRaw (positional args). ' +
+                'Consider updating SillyTavern to July 2025+ for full feature support.'
+            );
+            result = await generateRaw(userPrompt, systemPrompt);
         }
 
-        result = await generateRaw(options);
-    } else {
-        // Legacy ST: positional args — generateRaw(prompt, systemPrompt)
-        // Note: legacy signature does not support responseLength override
-        console.warn(
-            '[Summaryception] Detected legacy generateRaw (positional args). ' +
-            'Consider updating SillyTavern to July 2025+ for full feature support.'
-        );
-        result = await generateRaw(userPrompt, systemPrompt);
-    }
+        if (!result || typeof result !== 'string') {
+            throw new ConnectionError(
+                'generateRaw 返回了空响应或无效响应。',
+                { retryable: true }
+            );
+        }
 
-    if (!result || typeof result !== 'string') {
-        throw new ConnectionError(
-            'generateRaw 返回了空响应或无效响应。',
-            { retryable: true }
-        );
+        throwIfAborted(signal);
+        return result;
+    } catch (error) {
+        throwIfAborted(signal);
+        throw error;
+    } finally {
+        signal?.removeEventListener('abort', onAbort);
     }
-
-    return result;
 }
 
 // ─── Mode 2: Connection Profile ──────────────────────────────────────
@@ -172,7 +193,7 @@ async function sendViaDefault(systemPrompt, userPrompt, responseLength) {
  * the second argument causes the entire object to be stuffed into the message
  * content field, resulting in "Invalid input" / validation errors from the API.
  */
-async function sendViaProfile(profileId, systemPrompt, userPrompt) {
+async function sendViaProfile(profileId, systemPrompt, userPrompt, signal) {
     if (!profileId) {
         throw new ConnectionError(
             '未选择连接配置。请在 Summaryception 设置中选择一个。',
@@ -201,19 +222,21 @@ async function sendViaProfile(profileId, systemPrompt, userPrompt) {
 
     try {
         // Build messages as proper {role, content} objects.
-        // sendRequest expects: sendRequest(profileId, messages, options?)
+        // ST takes maxTokens third and request options fourth.
         // where messages is a string OR an array of {role, content} objects.
         const messages = [
             { role: 'system', content: systemPrompt },
             { role: 'user', content: userPrompt },
         ];
 
-        const raw = await service.sendRequest(profileId, messages, {
-            ignoreInstruct: true,
+        throwIfAborted(signal);
+        const raw = await service.sendRequest(profileId, messages, undefined, {
+            includeInstruct: false,
+            extractData: true,
+            stream: false,
+            signal,
         });
-
-        // Debug: log what we actually got back
-        console.log('[Summaryception][Connection] Profile sendRequest returned:', typeof raw, raw);
+        throwIfAborted(signal);
 
         // Handle various possible return types
         let result;
@@ -253,7 +276,8 @@ async function sendViaProfile(profileId, systemPrompt, userPrompt) {
         return result;
 
     } catch (error) {
-        if (error instanceof ConnectionError) throw error;
+        throwIfAborted(signal);
+        if (error.name === 'AbortError' || error instanceof ConnectionError) throw error;
 
         const msg = error?.message || String(error);
         const status = error?.status || error?.response?.status;
@@ -288,7 +312,7 @@ async function sendViaProfile(profileId, systemPrompt, userPrompt) {
  * Send a request to a local Ollama instance using /api/chat.
  * Routes through ST's CORS proxy to avoid browser CORS restrictions.
  */
-async function sendViaOllama(url, model, systemPrompt, userPrompt) {
+async function sendViaOllama(url, model, systemPrompt, userPrompt, signal) {
     if (!url) {
         throw new ConnectionError(
             '未配置 Ollama URL。请在 Summaryception 设置中填写。',
@@ -309,6 +333,7 @@ async function sendViaOllama(url, model, systemPrompt, userPrompt) {
     try {
         response = await fetch(proxiedUrl(targetUrl), {
             method: 'POST',
+            signal,
             headers: {
                 ...getProxyHeaders(),
                                'Content-Type': 'application/json',
@@ -326,10 +351,12 @@ async function sendViaOllama(url, model, systemPrompt, userPrompt) {
             }),
         });
     } catch (proxyError) {
+        throwIfAborted(signal);
         console.warn(`${MODULE_NAME} CORS proxy failed, trying direct:`, proxyError.message);
         try {
             response = await fetch(targetUrl, {
                 method: 'POST',
+                signal,
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
                     model: model,
@@ -342,6 +369,7 @@ async function sendViaOllama(url, model, systemPrompt, userPrompt) {
                 }),
             });
         } catch (directError) {
+            throwIfAborted(signal);
             throw new ConnectionError(
                 `无法连接到 ${baseUrl} 上的 Ollama。` +
                 `CORS 代理错误：${proxyError.message}。直连错误：${directError.message}。` +
@@ -430,7 +458,7 @@ export async function fetchOllamaModels(url) {
  * Routes through ST's CORS proxy for local endpoints.
  * Cloud endpoints skip the proxy since they have CORS headers.
  */
-async function sendViaOpenAI(url, apiKey, model, systemPrompt, userPrompt, maxTokens) {
+async function sendViaOpenAI(url, apiKey, model, systemPrompt, userPrompt, maxTokens, signal) {
     if (!url) {
         throw new ConnectionError(
             '未配置 OpenAI 兼容 URL。请在 Summaryception 设置中填写。',
@@ -492,18 +520,22 @@ async function sendViaOpenAI(url, apiKey, model, systemPrompt, userPrompt, maxTo
         try {
             response = await fetch(proxiedUrl(endpoint), {
                 method: 'POST',
+                signal,
                 headers: { ...getProxyHeaders(), ...headers },
                                    body: body,
             });
         } catch (proxyError) {
+            throwIfAborted(signal);
             console.warn(`${MODULE_NAME} CORS proxy failed for OpenAI endpoint, trying direct:`, proxyError.message);
             try {
                 response = await fetch(endpoint, {
                     method: 'POST',
+                    signal,
                     headers: headers,
                     body: body,
                 });
             } catch (directError) {
+                throwIfAborted(signal);
                 throw new ConnectionError(
                     `无法连接到 ${baseUrl}。` +
                     `请在 config.yaml 中启用 CORS 代理（enableCorsProxy: true）。` +
@@ -516,10 +548,12 @@ async function sendViaOpenAI(url, apiKey, model, systemPrompt, userPrompt, maxTo
         try {
             response = await fetch(endpoint, {
                 method: 'POST',
+                signal,
                 headers: headers,
                 body: body,
             });
         } catch (directError) {
+            throwIfAborted(signal);
             throw new ConnectionError(
                 `无法连接到 ${baseUrl}：${directError.message}`,
                 { retryable: true }
@@ -551,12 +585,16 @@ async function sendViaOpenAI(url, apiKey, model, systemPrompt, userPrompt, maxTo
     // Read SSE chunks and assemble the full response content.
     const reader = response.body.getReader();
     const decoder = new TextDecoder();
+    const onAbort = () => { reader.cancel().catch(() => {}); };
+    signal?.addEventListener('abort', onAbort, { once: true });
     let fullContent = '';
     let buffer = '';
 
     try {
         while (true) {
+            throwIfAborted(signal);
             const { done, value } = await reader.read();
+            throwIfAborted(signal);
             if (done) break;
 
             buffer += decoder.decode(value, { stream: true });
@@ -585,6 +623,8 @@ async function sendViaOpenAI(url, apiKey, model, systemPrompt, userPrompt, maxTo
             }
         }
     } finally {
+        signal?.removeEventListener('abort', onAbort);
+        if (signal?.aborted) await reader.cancel().catch(() => {});
         reader.releaseLock();
     }
 

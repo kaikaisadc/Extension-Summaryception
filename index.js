@@ -1,5 +1,5 @@
 /**
- * Summaryception v5.5.4 — Layered Recursive Summarization for SillyTavern
+ * Summaryception v5.5.6 — Layered Recursive Summarization for SillyTavern
  *
  * NON-DESTRUCTIVE: Uses SillyTavern's native /hide and /unhide commands
  * to exclude summarized messages from LLM context while keeping them
@@ -340,8 +340,8 @@ function saveSettings() {
     SillyTavern.getContext().saveSettingsDebounced();
 }
 
-function getChatStore() {
-    const { chatMetadata } = SillyTavern.getContext();
+function getChatStore(context = SillyTavern.getContext()) {
+    const { chatMetadata } = context;
     if (!chatMetadata[MODULE_NAME]) {
         chatMetadata[MODULE_NAME] = {
             layers: [],
@@ -359,18 +359,178 @@ function getChatStore() {
     // another version of the extension). Comparing against undefined
     // yields NaN → always false → every turn looks "already summarized"
     // while nothing is.
-    if (!Number.isInteger(store.summarizedUpTo)) {
+    if (!Number.isSafeInteger(store.summarizedUpTo) || store.summarizedUpTo < -1) {
         const layer0 = Array.isArray(store.layers[0]) ? store.layers[0] : [];
-        const ends = layer0.map(sn => sn?.turnRange?.[1]).filter(Number.isInteger);
-        store.summarizedUpTo = ends.length ? Math.max(...ends) : -1;
+        const ends = layer0.map(sn => sn?.turnRange?.[1]).filter(end => Number.isSafeInteger(end) && end >= 0);
+        store.summarizedUpTo = ends.length ? ends.reduce((max, end) => Math.max(max, end), -1) : -1;
         log(`Store migration: summarizedUpTo was missing/invalid → derived ${store.summarizedUpTo}`);
     }
 
     return store;
 }
 
-async function saveChatStore() {
-    await SillyTavern.getContext().saveMetadata();
+// Every async operation owns the chat identity, not just the shared chat array.
+// SillyTavern reuses that array when switching chats.
+let chatEpoch = 0;
+let activeOperation = null;
+let messageReceivedTimer = null;
+let chatChangedTimer = null;
+
+function captureChatScope() {
+    const context = SillyTavern.getContext();
+    return {
+        context,
+        chat: context.chat,
+        metadata: context.chatMetadata,
+        store: getChatStore(context),
+        chatId: context.chatId,
+        characterId: context.characterId,
+        groupId: context.groupId,
+        epoch: chatEpoch,
+    };
+}
+
+function isChatScopeCurrent(scope) {
+    const context = SillyTavern.getContext();
+    return scope.epoch === chatEpoch
+        && scope.chat === context.chat
+        && scope.metadata === context.chatMetadata
+        && scope.store === context.chatMetadata?.[MODULE_NAME]
+        && scope.chatId === context.chatId
+        && scope.characterId === context.characterId
+        && scope.groupId === context.groupId;
+}
+
+function abortError() {
+    const error = new Error('Operation cancelled or chat changed');
+    error.name = 'AbortError';
+    return error;
+}
+
+function assertChatScope(scope) {
+    if (!isChatScopeCurrent(scope)) throw abortError();
+}
+
+function beginChatOperation(kind = 'summary', scope = captureChatScope()) {
+    if (activeOperation || !isChatScopeCurrent(scope)) return null;
+    let resolveDone;
+    const operation = {
+        kind, scope, controller: new AbortController(),
+        done: new Promise(resolve => { resolveDone = resolve; }),
+        finish: () => resolveDone(),
+    };
+    activeOperation = operation;
+    return operation;
+}
+
+function finishChatOperation(operation) {
+    if (activeOperation === operation) activeOperation = null;
+    operation.finish();
+}
+
+function isOperationCurrent(operation) {
+    return !!operation && activeOperation === operation
+        && !operation.controller.signal.aborted
+        && isChatScopeCurrent(operation.scope);
+}
+
+async function saveChatStore(scope = captureChatScope()) {
+    assertChatScope(scope);
+    await scope.context.saveMetadata();
+    assertChatScope(scope);
+}
+
+async function runChatMutation(scope, action) {
+    if (!isChatScopeCurrent(scope)) return false;
+    if (activeOperation) {
+        if (activeOperation.kind !== 'summary') {
+            toastr.warning('正在修改记忆，请稍候。', 'Summaryception');
+            return false;
+        }
+        const previous = activeOperation;
+        previous.controller.abort();
+        await previous.done;
+    }
+    if (!isChatScopeCurrent(scope)) return false;
+    const operation = beginChatOperation('mutation', scope);
+    if (!operation) return false;
+    try {
+        await action(scope);
+        return isChatScopeCurrent(scope);
+    } catch (error) {
+        if (error.name !== 'AbortError') {
+            console.error(LOG_PREFIX, error);
+            if (isChatScopeCurrent(scope)) toastr.error('操作失败，未完成的修改已停止。请查看控制台。', 'Summaryception');
+        }
+        return false;
+    } finally {
+        finishChatOperation(operation);
+        if (isChatScopeCurrent(scope)) {
+            updateInjection();
+            updateUI();
+        }
+    }
+}
+
+function snapshotSourceRange(chat, start, end) {
+    return chat.slice(start, end + 1).map(message => ({
+        message, text: message?.mes, user: message?.is_user,
+        system: message?.is_system, hidden: message?.is_hidden,
+    }));
+}
+
+function isSourceRangeCurrent(scope, start, snapshot) {
+    return isChatScopeCurrent(scope) && snapshot.every((entry, offset) => {
+        const message = scope.chat[start + offset];
+        return message === entry.message && message?.mes === entry.text
+            && message?.is_user === entry.user && message?.is_system === entry.system
+            && message?.is_hidden === entry.hidden;
+    });
+}
+
+// Validate before touching the current memory or its visibility state. Only copy
+// known fields; imported indices never establish ownership of hidden messages.
+function validateMemoryImport(data, chatLength) {
+    const invalid = () => { throw new Error('记忆文件格式无效，或消息索引不属于当前聊天。'); };
+    const integer = (value, min = 0, max = Number.MAX_SAFE_INTEGER) =>
+        Number.isSafeInteger(value) && value >= min && value <= max;
+    if (!data || typeof data !== 'object' || Array.isArray(data) || !Array.isArray(data.layers)) invalid();
+    if (data.layers.length > 100) invalid();
+    let count = 0;
+    const layers = data.layers.map(layer => {
+        if (!Array.isArray(layer)) invalid();
+        count += layer.length;
+        if (count > 100000) invalid();
+        return layer.map(snippet => {
+            if (!snippet || typeof snippet !== 'object' || Array.isArray(snippet) || typeof snippet.text !== 'string') invalid();
+            const copy = { text: snippet.text };
+            if (Object.hasOwn(snippet, 'turnRange')) {
+                const range = snippet.turnRange;
+                if (!Array.isArray(range) || range.length !== 2
+                    || !integer(range[0], 0, chatLength - 1)
+                    || !integer(range[1], range[0], chatLength - 1)) invalid();
+                copy.turnRange = [...range];
+            }
+            for (const key of ['timestamp', 'fromLayer', 'seedFromLayer', 'mergedCount']) {
+                if (Object.hasOwn(snippet, key)) {
+                    if (!integer(snippet[key], key === 'mergedCount' ? 1 : 0)) invalid();
+                    copy[key] = snippet[key];
+                }
+            }
+            for (const key of ['promoted', 'regenerated']) {
+                if (Object.hasOwn(snippet, key)) {
+                    if (typeof snippet[key] !== 'boolean') invalid();
+                    copy[key] = snippet[key];
+                }
+            }
+            return copy;
+        });
+    });
+    const summarizedUpTo = data.summarizedUpTo ?? -1;
+    if (!integer(summarizedUpTo, -1, chatLength - 1)) invalid();
+    if (Object.hasOwn(data, 'ghostedIndices') && (!Array.isArray(data.ghostedIndices)
+        || data.ghostedIndices.some(index => !integer(index, 0, chatLength - 1)))) invalid();
+    return { layers, summarizedUpTo, ghostedIndices: [] };
 }
 
 function getPlayerName() {
@@ -379,180 +539,108 @@ function getPlayerName() {
 }
 
 // ─── Message Hiding (Ghosting via native /hide /unhide) ──────────────
-async function repairGhostingForRange(startIdx, endIdx) {
-    trace('>>> ENTERING repairGhostingForRange');
-    trace(' startIdx:', startIdx, 'endIdx:', endIdx);
-
-    const { chat } = SillyTavern.getContext();
-    const store = getChatStore();
-    const s = getSettings();
-    let repaired = 0;
-
-    // ── Phase 1: Mark metadata ──
-    for (let i = startIdx; i <= endIdx; i++) {
-        const m = chat[i];
-        if (!m) continue;
-        if (m.extra?.sc_ghosted) continue;
-        if (m.is_hidden && !m.extra?.sc_ghosted) continue;  // user-hidden
-        if (m.is_system || !m.mes?.trim()) continue;
-        if (m.is_user) continue;
-
-        m.extra = m.extra || {};
-        m.extra.sc_ghosted = true;
-
-        if (!store.ghostedIndices.includes(i)) {
-            store.ghostedIndices.push(i);
-        }
-        repaired++;
+function contiguousRanges(indices) {
+    const ranges = [];
+    for (const index of [...new Set(indices)].sort((a, b) => a - b)) {
+        const previous = ranges[ranges.length - 1];
+        if (previous && index === previous[1] + 1) previous[1] = index;
+        else ranges.push([index, index]);
     }
+    return ranges;
+}
 
-    // ── Phase 2: Single range-based /hide ──
-    if (!s.disableGhosting && repaired > 0) {
-        try {
-            await SillyTavern.getContext().executeSlashCommandsWithOptions(
-                `/hide ${startIdx}-${endIdx}`,
-                { showOutput: false }
-            );
-        } catch (e) {
-            console.error(LOG_PREFIX, `Failed to ghost range ${startIdx}-${endIdx}:`, e);
+function syncGhostedIndices(scope) {
+    scope.store.ghostedIndices = scope.chat.flatMap((message, index) => message?.extra?.sc_ghosted ? [index] : []);
+}
+
+async function hideOwnedMessages(indices, scope) {
+    assertChatScope(scope);
+    const disableGhosting = getSettings().disableGhosting;
+    const eligible = indices.filter(index => Number.isSafeInteger(index) && index >= 0 && index < scope.chat.length)
+        .filter(index => {
+            const message = scope.chat[index];
+            return message && !message.is_system && !message.is_hidden && !message.extra?.sc_ghosted;
+        });
+    for (const [start, end] of contiguousRanges(eligible)) {
+        assertChatScope(scope);
+        const messages = scope.chat.slice(start, end + 1);
+        for (const message of messages) {
+            message.extra ??= {};
+            message.extra.sc_ghosted = true;
+            message.extra.sc_hide_owned = !disableGhosting;
+        }
+        syncGhostedIndices(scope);
+        if (!disableGhosting) {
+            try {
+                await scope.context.executeSlashCommandsWithOptions(`/hide ${start}-${end}`, { showOutput: false });
+            } catch (error) {
+                // A host save can fail after /hide already changed visibility.
+                // Retain ownership of those hides so cleanup remains possible.
+                for (const message of messages) {
+                    if (!message.is_system) {
+                        delete message.extra.sc_ghosted;
+                        delete message.extra.sc_hide_owned;
+                    }
+                }
+                if (isChatScopeCurrent(scope)) syncGhostedIndices(scope);
+                throw error;
+            }
+            assertChatScope(scope);
         }
     }
+    return eligible.length;
+}
 
-    await saveChatStore();
-    trace(' Repaired:', repaired);
-    trace('<<< EXITING repairGhostingForRange');
+async function repairGhostingForRange(startIdx, endIdx, scope = captureChatScope()) {
+    const indices = [];
+    for (let i = Math.max(0, startIdx); i <= Math.min(endIdx, scope.chat.length - 1); i++) {
+        if (!scope.chat[i]?.is_user && scope.chat[i]?.mes?.trim()) indices.push(i);
+    }
+    const repaired = await hideOwnedMessages(indices, scope);
+    await saveChatStore(scope);
     return repaired;
 }
 
-async function ghostMessage(messageIndex) {
-    const { chat } = SillyTavern.getContext();
-    const msg = chat[messageIndex];
-    if (!msg) return;
-    if (!msg.extra) msg.extra = {};
-    if (msg.extra.sc_ghosted) return;
-
-    msg.extra.sc_ghosted = true;
-
-    // Track that WE ghosted this message
-    const store = getChatStore();
-    if (!store.ghostedIndices.includes(messageIndex)) {
-        store.ghostedIndices.push(messageIndex);
-    }
-
-    // Only visually hide if ghosting is enabled
-    const s = getSettings();
-    if (!s.disableGhosting) {
-        try {
-            await SillyTavern.getContext().executeSlashCommandsWithOptions(`/hide ${messageIndex}`, { showOutput: false });
-        } catch (e) {
-            log(`Failed to hide message ${messageIndex}:`, e);
-        }
-    }
-
-    log(`Ghosted message at index ${messageIndex}${s.disableGhosting ? ' (hiding disabled)' : ''}`);
+async function ghostMessage(messageIndex, scope = captureChatScope()) {
+    await hideOwnedMessages([messageIndex], scope);
 }
 
-async function unghostAllMessages() {
-    const { chat } = SillyTavern.getContext();
-    const store = getChatStore();
-
-    // Collect indices to unhide
-    const toUnhide = store.ghostedIndices && store.ghostedIndices.length > 0
-    ? [...store.ghostedIndices]
-    : [];
-
-    // Fallback for older saves
-    if (toUnhide.length === 0) {
-        for (let i = 0; i < chat.length; i++) {
-            if (chat[i]?.extra?.sc_ghosted) {
-                toUnhide.push(i);
-            }
+async function unghostAllMessages(scope = captureChatScope(), indices = null) {
+    assertChatScope(scope);
+    const selected = indices ? new Set(indices) : null;
+    const tagged = scope.chat.flatMap((message, index) =>
+        message?.extra?.sc_ghosted && (!selected || selected.has(index)) ? [index] : []);
+    // A cached/imported ghostedIndices entry alone never authorizes /unhide.
+    const owned = tagged.filter(index => scope.chat[index].extra.sc_hide_owned !== false);
+    for (const [start, end] of contiguousRanges(owned)) {
+        assertChatScope(scope);
+        const messages = scope.chat.slice(start, end + 1);
+        await scope.context.executeSlashCommandsWithOptions(`/unhide ${start}-${end}`, { showOutput: false });
+        assertChatScope(scope);
+        for (const message of messages) {
+            delete message.extra.sc_ghosted;
+            delete message.extra.sc_hide_owned;
+        }
+        syncGhostedIndices(scope);
+    }
+    // These messages were summarized with hiding disabled. Preserve any later
+    // manual hide, and only remove our bookkeeping.
+    for (const index of tagged) {
+        const message = scope.chat[index];
+        if (message.extra.sc_hide_owned === false) {
+            delete message.extra.sc_ghosted;
+            delete message.extra.sc_hide_owned;
         }
     }
-
-    if (toUnhide.length === 0) return;
-
-    // ── Clear metadata first ──
-    for (const idx of toUnhide) {
-        if (idx >= 0 && idx < chat.length && chat[idx]?.extra?.sc_ghosted) {
-            delete chat[idx].extra.sc_ghosted;
-        }
-    }
-
-    // ── Single range-based /unhide ──
-    // Find the contiguous range (or use min-max for simplicity;
-    // /unhide on already-unhidden messages is a no-op)
-    const minIdx = Math.min(...toUnhide);
-    const maxIdx = Math.max(...toUnhide);
-
-    const progressToast = toastr.info(
-        `正在取消隐藏消息 ${minIdx}–${maxIdx}…`,
-        'Summaryception — 清理中',
-        { timeOut: 0, extendedTimeOut: 0, tapToDismiss: false }
-    );
-
-    try {
-        await SillyTavern.getContext().executeSlashCommandsWithOptions(
-            `/unhide ${minIdx}-${maxIdx}`,
-            { showOutput: false }
-        );
-    } catch (e) {
-        log(`Failed to unhide range ${minIdx}-${maxIdx}:`, e);
-    }
-
-    store.ghostedIndices = [];
-    toastr.clear(progressToast);
-    log(`Unghosted ${toUnhide.length} messages via range command`);
+    syncGhostedIndices(scope);
 }
 
-// ─── REPLACE ghostMessagesUpTo() ─────────────────────────────────────
-
-async function ghostMessagesUpTo(endIndex, startIndex = 0) {
-    const { chat } = SillyTavern.getContext();
-    const store = getChatStore();
-    const s = getSettings();
-
-    // ── Phase 1: Mark metadata (fast, no DOM/command overhead) ──
-    let newlyGhosted = 0;
-    const rangeStart = startIndex;  // Only process from startIndex
-    const rangeEnd = endIndex;
-
-    for (let i = rangeStart; i <= rangeEnd; i++) {
-        const msg = chat[i];
-        if (!msg) continue;
-        if (msg.is_system && !msg.extra?.sc_ghosted) continue;
-        if (!msg.extra) msg.extra = {};
-        if (msg.extra.sc_ghosted) continue;
-
-        // Skip messages already hidden by the user (not by us)
-        if (msg.is_hidden) {
-            log(`Skipping message ${i} — already hidden by user`);
-            continue;
-        }
-
-        msg.extra.sc_ghosted = true;
-
-        if (!store.ghostedIndices.includes(i)) {
-            store.ghostedIndices.push(i);
-        }
-
-        newlyGhosted++;
-    }
-
-    // ── Phase 2: Single range-based /hide command (the expensive part) ──
-    if (!s.disableGhosting && newlyGhosted > 0) {
-        try {
-            // SillyTavern /hide supports inclusive ranges: /hide start-end
-            await SillyTavern.getContext().executeSlashCommandsWithOptions(
-                `/hide ${rangeStart}-${rangeEnd}`,
-                { showOutput: false }
-            );
-        } catch (e) {
-            console.error(LOG_PREFIX, `Failed to hide range ${rangeStart}-${rangeEnd}:`, e);
-        }
-    }
-
-    log(`Ghosted messages ${rangeStart}–${rangeEnd} (${newlyGhosted} newly marked)${s.disableGhosting ? ' (hiding disabled — metadata only)' : ''}`);
+async function ghostMessagesUpTo(endIndex, startIndex = 0, scope = captureChatScope()) {
+    assertChatScope(scope);
+    if (!Number.isSafeInteger(startIndex) || !Number.isSafeInteger(endIndex)) throw new Error('Invalid message range');
+    const indices = [];
+    for (let i = Math.max(0, startIndex); i <= Math.min(endIndex, scope.chat.length - 1); i++) indices.push(i);
+    await hideOwnedMessages(indices, scope);
 }
 
 // ─── Branch Detection & Repair ───────────────────────────────────────
@@ -566,9 +654,9 @@ async function ghostMessagesUpTo(endIndex, startIndex = 0) {
  *
  * This function detects that condition and trims our store to match reality.
  */
-async function repairIfBranched() {
-    const { chat } = SillyTavern.getContext();
-    const store = getChatStore();
+async function repairIfBranched(scope = captureChatScope()) {
+    assertChatScope(scope);
+    const { chat, store } = scope;
 
     if (!chat || chat.length === 0) return;
     if (store.summarizedUpTo < 0) return;
@@ -611,7 +699,7 @@ async function repairIfBranched() {
             store.ghostedIndices = store.ghostedIndices.filter(idx => idx < chatLength);
         }
 
-        await saveChatStore();
+        await saveChatStore(scope);
 
         log(`Branch repair complete. summarizedUpTo: ${oldSummarizedUpTo} → ${store.summarizedUpTo}`);
 
@@ -687,9 +775,9 @@ function buildFullContext(downToLayer = 0) {
 
     for (let i = store.layers.length - 1; i >= downToLayer; i--) {
         const layer = store.layers[i];
-        if (!layer || layer.length === 0) continue;
+        if (!Array.isArray(layer) || layer.length === 0) continue;
         for (const sn of layer) {
-            parts.push(sn.text);
+            if (sn && typeof sn.text === 'string') parts.push(sn.text);
         }
     }
 
@@ -698,72 +786,24 @@ function buildFullContext(downToLayer = 0) {
 
 // ─── Prompt Toggle Management ────────────────────────────────────────
 
-function snapshotPromptToggles() {
+function snapshotPromptToggles(context) {
     const snapshot = new Map();
     try {
-        const ctx = SillyTavern.getContext();
-        const promptManager = ctx.promptManager;
-        if (!promptManager) {
-            log('No prompt manager available, skipping toggle snapshot.');
-            return snapshot;
-        }
-        const collection = promptManager.getPromptCollection();
-        if (!collection?.collection) return snapshot;
-        const orderList = promptManager.getPromptOrderEntries();
-        if (!orderList) return snapshot;
-        for (const entry of collection.collection) {
-            for (const orderEntry of orderList) {
-                if (orderEntry.identifier === entry.identifier) {
-                    snapshot.set(entry.identifier, orderEntry.enabled);
-                }
-            }
-        }
-        log(`Snapshot captured: ${snapshot.size} prompt toggles`);
-    } catch (e) {
-        log('Error capturing snapshot:', e);
+        const orderList = context.promptManager?.getPromptOrderEntries();
+        for (const entry of orderList || []) snapshot.set(entry, entry.enabled);
+    } catch (error) {
+        log('Error capturing prompt toggles:', error);
     }
     return snapshot;
 }
 
-function disableAllPromptToggles() {
-    try {
-        const ctx = SillyTavern.getContext();
-        const promptManager = ctx.promptManager;
-        if (!promptManager) return;
-        const orderList = promptManager.getPromptOrderEntries();
-        if (!orderList) return;
-        let count = 0;
-        for (const entry of orderList) {
-            if (entry.enabled) {
-                entry.enabled = false;
-                count++;
-            }
-        }
-        log(`Disabled ${count} prompt toggles`);
-    } catch (e) {
-        log('Error disabling prompt toggles:', e);
-    }
+function disableAllPromptToggles(snapshot) {
+    for (const entry of snapshot.keys()) entry.enabled = false;
 }
 
 function restorePromptToggles(snapshot) {
-    if (!snapshot || snapshot.size === 0) return;
-    try {
-        const ctx = SillyTavern.getContext();
-        const promptManager = ctx.promptManager;
-        if (!promptManager) return;
-        const orderList = promptManager.getPromptOrderEntries();
-        if (!orderList) return;
-        let count = 0;
-        for (const entry of orderList) {
-            if (snapshot.has(entry.identifier)) {
-                entry.enabled = snapshot.get(entry.identifier);
-                count++;
-            }
-        }
-        log(`Restored ${count} prompt toggles`);
-    } catch (e) {
-        log('Error restoring prompt toggles:', e);
-    }
+    // Restore the exact original entries, even if another chat/preset is open.
+    for (const [entry, enabled] of snapshot) entry.enabled = enabled;
 }
 
 // ─── Output Cleaning ─────────────────────────────────────────────────
@@ -813,584 +853,255 @@ function cleanSummarizerOutput(raw) {
 
 // ─── Core: Summarization State ───────────────────────────────────────
 
-let isSummarizing = false;
 let catchupDismissed = false;
-let currentAbortController = null;
 
 function abortSummarization() {
-    if (currentAbortController) {
-        currentAbortController.abort();
-        log('Abort signal sent.');
-    }
-    isSummarizing = false;
+    activeOperation?.controller.abort();
+    // The operation keeps the lock until its finally block finishes cleanup.
 }
 
-// ─── Core: LLM Summarization with Retry ──────────────────────────────
-
-async function callSummarizer(storyTxt, contextStr) {
-    trace('>>> ENTERING callSummarizer');
-    trace('  storyTxt length:', storyTxt?.length ?? 'UNDEFINED');
-    trace('  contextStr length:', contextStr?.length ?? 'UNDEFINED');
-
-    const s = getSettings();
-    trace('  settings loaded:', {
-        connectionSource: s.connectionSource,
-        enabled: s.enabled,
+function waitForDelay(ms, signal) {
+    return new Promise((resolve, reject) => {
+        if (signal.aborted) return reject(abortError());
+        const onAbort = () => {
+            clearTimeout(timer);
+            signal.removeEventListener('abort', onAbort);
+            reject(abortError());
+        };
+        const timer = setTimeout(() => {
+            signal.removeEventListener('abort', onAbort);
+            resolve();
+        }, ms);
+        signal.addEventListener('abort', onAbort, { once: true });
     });
+}
 
-    const prompt = s.summarizerUserPrompt
-        .replace('{{player_name}}', getPlayerName())
-        .replace('{{context_str}}', contextStr || '(none yet)')
-        .replace('{{story_txt}}', storyTxt);
+async function requestSummaryWithTimeout(settings, prompt, operation) {
+    if (!isOperationCurrent(operation)) throw abortError();
+    const controller = new AbortController();
+    const parentSignal = operation.controller.signal;
+    let timedOut = false;
+    let timer;
+    const onParentAbort = () => controller.abort();
+    let onAbort;
+    const cancelled = new Promise((_, reject) => {
+        onAbort = () => reject(timedOut ? new Error('Request timeout after 120s') : abortError());
+        controller.signal.addEventListener('abort', onAbort, { once: true });
+    });
+    parentSignal.addEventListener('abort', onParentAbort, { once: true });
+    if (parentSignal.aborted) controller.abort();
+    else timer = setTimeout(() => {
+        timedOut = true;
+        controller.abort();
+    }, TUNING.llmRequestTimeout);
+    try {
+        if (!isOperationCurrent(operation)) throw abortError();
+        return await Promise.race([
+            cancelled,
+            sendSummarizerRequest(settings, settings.summarizerSystemPrompt, prompt, { signal: controller.signal }),
+        ]);
+    } finally {
+        clearTimeout(timer);
+        parentSignal.removeEventListener('abort', onParentAbort);
+        controller.signal.removeEventListener('abort', onAbort);
+    }
+}
 
-    log('── Summarizer Call ──');
-    log('Context str length:', contextStr.length, 'chars');
-    log('Story txt length:', storyTxt.length, 'chars');
-
-    const isDefaultMode = !s.connectionSource || s.connectionSource === 'default';
-    const snapshot = isDefaultMode ? snapshotPromptToggles() : null;
-    if (isDefaultMode) disableAllPromptToggles();
-
-    currentAbortController = new AbortController();
-    const { signal } = currentAbortController;
-
-    let lastError = null;
-
+async function callSummarizer(storyTxt, contextStr, operation) {
+    if (!isOperationCurrent(operation)) return '';
+    const settings = structuredClone(getSettings());
+    const prompt = settings.summarizerUserPrompt
+        .replace('{{player_name}}', () => operation.scope.context.name1 || 'User')
+        .replace('{{context_str}}', () => contextStr || '(none yet)')
+        .replace('{{story_txt}}', () => storyTxt);
+    const isDefaultMode = !settings.connectionSource || settings.connectionSource === 'default';
+    const snapshot = isDefaultMode ? snapshotPromptToggles(operation.scope.context) : null;
+    if (snapshot) disableAllPromptToggles(snapshot);
+    let lastError;
     try {
         for (let attempt = 0; attempt <= RETRY_CONFIG.maxRetries; attempt++) {
-            trace(`  Attempt ${attempt} starting...`);
-
-            if (signal.aborted) {
-                log('Summarization aborted by user.');
-                toastr.warning('摘要已中止。', 'Summaryception', { timeOut: TUNING.toastMedium });
-                return '';
-            }
-
+            if (!isOperationCurrent(operation)) return '';
             try {
-                if (attempt > 0) {
-                    log(`Retry attempt ${attempt}/${RETRY_CONFIG.maxRetries}`);
-                }
-
-                trace(`  About to call sendSummarizerRequest with:`, {
-                    connectionSource: s.connectionSource,
-                    summarizerSystemPrompt: s.summarizerSystemPrompt?.substring(0, 50),
-                    promptLength: prompt.length,
-                });
-
-                const result = await Promise.race([
-                    sendSummarizerRequest(s, s.summarizerSystemPrompt, prompt),
-                    new Promise((_, reject) => {
-                        const timer = setTimeout(() => reject(new Error('Request timed out after 120s')), TUNING.llmRequestTimeout);
-                        signal.addEventListener('abort', () => {
-                            clearTimeout(timer);
-                            reject(new Error('Aborted by user'));
-                        });
-                    }),
-                ]);
-
-                trace('  sendSummarizerRequest returned:', result?.substring?.(0, 50));
-
-                let trimmed = (result || '').trim();
-                trimmed = cleanSummarizerOutput(trimmed);
-
-                if (!trimmed) {
-                    log('Empty response from LLM, treating as retryable');
-                    throw new Error('Empty response from summarizer');
-                }
-
-                log('Result:', trimmed);
-                trace('<<< EXITING callSummarizer WITH SUCCESS');
+                const result = await requestSummaryWithTimeout(settings, prompt, operation);
+                if (!isOperationCurrent(operation)) return '';
+                const trimmed = cleanSummarizerOutput((result || '').trim());
+                if (!trimmed) throw new Error('Empty response from summarizer');
                 return trimmed;
-
-            } catch (err) {
-                lastError = err;
-                trace(`  Caught error on attempt ${attempt}:`, {
-                    name: err?.name,
-                    message: err?.message,
-                    retryable: err?.retryable,
-                });
-
-                if (signal.aborted || err.message === 'Aborted by user') {
-                    log('Summarization aborted by user.');
-                    toastr.warning('摘要已中止。', 'Summaryception', { timeOut: TUNING.toastMedium });
-                    return '';
+            } catch (error) {
+                if (!isOperationCurrent(operation) || error.name === 'AbortError') return '';
+                lastError = error;
+                if (!isRetryableError(error) || attempt === RETRY_CONFIG.maxRetries) break;
+                const delay = Math.min(parseRetryAfter(error)
+                    || RETRY_CONFIG.baseDelay * Math.pow(RETRY_CONFIG.backoffMultiplier, attempt)
+                        + Math.random() * RETRY_CONFIG.baseDelay, RETRY_CONFIG.maxDelay);
+                toastr.warning(`API 错误。将在 ${(delay / 1000).toFixed(1)} 秒后重试…（${attempt + 1}/${RETRY_CONFIG.maxRetries}）`,
+                    'Summaryception', { timeOut: delay });
+                try {
+                    await waitForDelay(delay, operation.controller.signal);
+                } catch (error) {
+                    if (error.name === 'AbortError') return '';
+                    throw error;
                 }
-
-                if (!isRetryableError(err)) {
-                    trace('  ERROR IS NON-RETRYABLE, BREAKING');
-                    console.error(LOG_PREFIX, 'Non-retryable error:', err);
-                    break;
-                }
-
-                if (attempt >= RETRY_CONFIG.maxRetries) {
-                    trace('  MAX RETRIES EXHAUSTED');
-                    console.error(LOG_PREFIX, `All ${RETRY_CONFIG.maxRetries} retries exhausted.`);
-                    break;
-                }
-
-                let delay;
-                const retryAfterMs = parseRetryAfter(err);
-                if (retryAfterMs) {
-                    delay = Math.min(retryAfterMs, RETRY_CONFIG.maxDelay);
-                    log(`Server requested retry after ${delay}ms`);
-                } else {
-                    const exponentialDelay = RETRY_CONFIG.baseDelay * Math.pow(RETRY_CONFIG.backoffMultiplier, attempt);
-                    const jitter = Math.random() * RETRY_CONFIG.baseDelay;
-                    delay = Math.min(exponentialDelay + jitter, RETRY_CONFIG.maxDelay);
-                }
-
-                const delaySec = (delay / 1000).toFixed(1);
-                const status = err?.status || err?.response?.status || '?';
-
-                console.warn(LOG_PREFIX, `Attempt ${attempt + 1} failed (${status}). Retrying in ${delaySec}s...`, err.message || err);
-
-                toastr.warning(
-                    `API 错误（${status}）。将在 ${delaySec} 秒后重试…（${attempt + 1}/${RETRY_CONFIG.maxRetries}）`,
-                    'Summaryception',
-                    { timeOut: delay }
-                );
-
-                await new Promise((resolve) => {
-                    const timer = setTimeout(resolve, delay);
-                    signal.addEventListener('abort', () => {
-                        clearTimeout(timer);
-                        resolve();
-                    });
-                });
             }
         }
-
-        const status = lastError?.status || lastError?.response?.status || '';
-        console.error(LOG_PREFIX, 'Summarization failed after all retries:', lastError);
-        toastr.error(
-            `摘要失败，已重试 ${RETRY_CONFIG.maxRetries} 次${status ? `（${status}）` : ''}。本批已跳过，将在下次触发时重试。`,
-            'Summaryception',
-            { timeOut: TUNING.toastError }
-        );
-        trace('<<< EXITING callSummarizer WITH FAILURE');
+        console.error(LOG_PREFIX, 'Summarization failed:', lastError);
+        toastr.error('摘要失败。本批未处理的消息将保留，供下次重试。', 'Summaryception', { timeOut: TUNING.toastError });
         return '';
-
     } finally {
-        currentAbortController = null;
-        if (isDefaultMode && snapshot) {
-            restorePromptToggles(snapshot);
-        }
+        if (snapshot) restorePromptToggles(snapshot);
     }
 }
 
 // ─── Core: Summarize Oldest Verbatim Turns ──────────────────────────
 
 async function maybeSummarizeTurns() {
-    const s = getSettings();
-    if (!s.enabled) return;
-    if (s.pauseSummarization) return;
-    if (isSummarizing) return;
-
-    const { chat } = SillyTavern.getContext();
-    const store = getChatStore();
-
-    const allAssistantTurns = getAssistantTurns(chat);
-    const visibleTurns = allAssistantTurns.filter(t => !chat[t.index].extra?.sc_ghosted);
-
-    log(`Visible assistant turns: ${visibleTurns.length}, limit: ${s.verbatimTurns}`);
-
-    if (visibleTurns.length <= s.verbatimTurns) return;
-
-    const overflow = visibleTurns.length - s.verbatimTurns;
-
-    // ─── Backlog detection ───────────────────────────────────────
-    const backlogThreshold = s.turnsPerSummary * TUNING.backlogMultiplier;
-
-    if (overflow > backlogThreshold && !catchupDismissed) {
-        log(`Large backlog detected: ${overflow} turns over limit`);
-
-        const batchesNeeded = Math.ceil(overflow / s.turnsPerSummary);
-        const choice = await showCatchupDialog(overflow, batchesNeeded);
-
-        if (choice === 'skip') {
-            const cutoff = visibleTurns[visibleTurns.length - s.verbatimTurns - 1];
-            if (cutoff) {
-                store.summarizedUpTo = cutoff.index;
-                log(`Skipped backlog. summarizedUpTo set to ${store.summarizedUpTo}`);
-            }
-            catchupDismissed = true;
-            await saveChatStore();
-            return;
-        } else if (choice === 'catchup') {
-            await runCatchup(visibleTurns, overflow);
-            return;
-        } else if (choice === 'partial') {
-            await summarizeOneBatch(visibleTurns);
-            return;
-        }
-        return;
-    }
-
-    // ─── Normal operation: single batch ──────────────────────────
-    const success = await summarizeOneBatch(visibleTurns);
-
-    if (!success) {
-        log('Batch failed, stopping summarization cycle to avoid retry loop.');
-        return;
-    }
-
-    const remaining = getAssistantTurns(chat).filter(t => !chat[t.index].extra?.sc_ghosted);
-    if (remaining.length > s.verbatimTurns && remaining.length - s.verbatimTurns <= backlogThreshold) {
-        await maybeSummarizeTurns();
-    }
-}
-
-// ─── Core: Single Batch Summarization ────────────────────────────────
-
-async function summarizeOneBatch(visibleTurns) {
-    trace('>>> ENTERING summarizeOneBatch');
-    trace('  visibleTurns:', visibleTurns?.length ?? 'UNDEFINED');
-
-    const s = getSettings();
-    const { chat } = SillyTavern.getContext();
-    const store = getChatStore();
-
-    // ─── FIX: Filter out turns that are at or before summarizedUpTo ───
-    const eligibleTurns = visibleTurns.filter(t => t.index > store.summarizedUpTo);
-    trace('  eligibleTurns after filtering:', eligibleTurns.length);
-
-    if (eligibleTurns.length === 0) {
-        log('All visible turns are already summarized — repairing ghosting...');
-        const turnsToGhost = visibleTurns.filter(t => t.index <= store.summarizedUpTo);
-        for (const t of turnsToGhost) {
-            await ghostMessage(t.index);
-        }
-        await saveChatStore();
-        trace('<<< EXITING summarizeOneBatch - REPAIRED GHOSTING');
-        return false;
-    }
-
-    const batchSize = Math.min(s.turnsPerSummary, eligibleTurns.length);
-    const batch = eligibleTurns.slice(0, batchSize);
-
-    if (batch.length === 0) {
-        trace('<<< EXITING summarizeOneBatch - EMPTY BATCH');
-        return false;
-    }
-
-    isSummarizing = true;
-
+    const settings = getSettings();
+    if (!settings.enabled || settings.pauseSummarization || activeOperation) return;
+    const operation = beginChatOperation();
+    if (!operation) return;
     try {
-        const startIdx = batch[0].index;
-        const endIdx = batch[batch.length - 1].index;
-        trace('  startIdx:', startIdx, 'endIdx:', endIdx);
-        trace('  store.summarizedUpTo:', store.summarizedUpTo);
-
-        log(`Summarizing ${batch.length} assistant turns (indices ${startIdx}–${endIdx})`);
-
-        if (!store.layers[0]) store.layers[0] = [];
-        const passageStart = store.summarizedUpTo < 0 ? 0 : store.summarizedUpTo + 1;
-
-        // ─── SANITY CHECK ───
-        if (passageStart > endIdx) {
-            log(`ERROR: passageStart (${passageStart}) > endIdx (${endIdx}). Batch already summarized?`);
-            trace('<<< EXITING summarizeOneBatch - PASSAGE START GREATER THAN END');
-            return false;
+        while (isOperationCurrent(operation)) {
+            const { chat, store } = operation.scope;
+            const visibleTurns = getAssistantTurns(chat).filter(turn => !chat[turn.index].extra?.sc_ghosted);
+            if (visibleTurns.length <= settings.verbatimTurns) return;
+            const overflow = visibleTurns.length - settings.verbatimTurns;
+            if (overflow > settings.turnsPerSummary * TUNING.backlogMultiplier && !catchupDismissed) {
+                const choice = await showCatchupDialog(overflow, Math.ceil(overflow / settings.turnsPerSummary), operation.controller.signal);
+                if (!isOperationCurrent(operation)) return;
+                if (choice === 'skip') {
+                    const cutoff = visibleTurns[visibleTurns.length - settings.verbatimTurns - 1];
+                    if (cutoff) store.summarizedUpTo = cutoff.index;
+                    catchupDismissed = true;
+                    await saveChatStore(operation.scope);
+                } else if (choice === 'catchup') {
+                    await runCatchup(visibleTurns, overflow, operation);
+                } else if (choice === 'partial') {
+                    await summarizeOneBatch(visibleTurns, operation);
+                }
+                return;
+            }
+            if (!await summarizeOneBatch(visibleTurns, operation)) return;
         }
-
-        const storyTxt = buildPassageFromRange(chat, passageStart, endIdx);
-        trace('  storyTxt length:', storyTxt?.length ?? 'UNDEFINED');
-        if (!storyTxt.trim()) {
-            trace('<<< EXITING summarizeOneBatch - EMPTY PASSAGE');
-            // --- FIX: Advance pointer and save so it doesn't try this empty batch again next turn ---
-            store.summarizedUpTo = Math.max(store.summarizedUpTo, endIdx);
-            await saveChatStore();
-            return true; // Return true so it doesn't think the cycle crashed
+    } catch (error) {
+        if (error.name !== 'AbortError') {
+            console.error(LOG_PREFIX, error);
+            if (isChatScopeCurrent(operation.scope)) toastr.error('摘要保存失败，处理已停止。', 'Summaryception');
         }
-
-        const contextStr = buildFullContext(0);
-
-        // 保留上游条件表达式结构；中文没有复数后缀，两个分支都输出空字符串。
-        toastr.info(`正在为 ${batch.length} 个轮次生成摘要${batch.length > 1 ? '' : ''}…`, 'Summaryception', {
-            timeOut: TUNING.toastMedium,
-            progressBar: true,
-        });
-
-        const summary = await callSummarizer(storyTxt, contextStr);
-        trace('  summary length:', summary?.length ?? 'UNDEFINED');
-
-        if (!summary) {
-            log('Summarization failed for batch, leaving turns intact for next attempt.');
-            trace('<<< EXITING summarizeOneBatch - EMPTY SUMMARY');
-            return false;
-        }
-
-        store.layers[0].push({
-            text: summary,
-            turnRange: [passageStart, endIdx],
-            timestamp: Date.now(),
-        });
-
-        store.summarizedUpTo = Math.max(store.summarizedUpTo, endIdx);
-        await ghostMessagesUpTo(endIdx, passageStart);
-
-        log(`Layer 0 now has ${store.layers[0].length} snippets`);
-
-        await maybePromoteLayer(0);
-        await saveChatStore();
-
-        try {
-            const ctx = SillyTavern.getContext();
-            if (ctx.saveChat) await ctx.saveChat();
-        } catch (e) {
-            log('Could not save chat:', e);
-        }
-
-        toastr.success(`摘要已保存（第 0 层：${store.layers[0].length} 个片段）`, 'Summaryception', { timeOut: TUNING.toastDefault });
-        trace('<<< EXITING summarizeOneBatch - SUCCESS');
-        return true;
-
     } finally {
-        isSummarizing = false;
+        finishChatOperation(operation);
     }
 }
 
-// ─── Core: Inner Batch for Catchup ───────────────────────────────────
+async function summarizeOneBatch(visibleTurns, operation = null) {
+    const ownsOperation = !operation;
+    operation ??= beginChatOperation();
+    if (!operation) return false;
+    try {
+        const result = await summarizeOneBatchFromTurns(visibleTurns, operation);
+        return result === true || result === 'EMPTY_SKIP';
+    } finally {
+        if (ownsOperation) finishChatOperation(operation);
+    }
+}
 
-async function summarizeOneBatchFromTurns(visibleTurns) {
-    trace('>>> ENTERING summarizeOneBatchFromTurns');
-    trace('  visibleTurns:', visibleTurns?.length ?? 'UNDEFINED');
-
-    const s = getSettings();
-    const { chat } = SillyTavern.getContext();
-    const store = getChatStore();
-
-    // ─── FIX: Filter out turns that are at or before summarizedUpTo ───
-    const eligibleTurns = visibleTurns.filter(t => t.index > store.summarizedUpTo);
-    trace('  eligibleTurns after filtering:', eligibleTurns.length);
-
-    if (eligibleTurns.length === 0) {
-        log('All visible turns are already summarized — repairing ghosting...');
-        const turnsToGhost = visibleTurns.filter(t => t.index <= store.summarizedUpTo);
-        for (const t of turnsToGhost) {
-            await ghostMessage(t.index);
+async function summarizeOneBatchFromTurns(visibleTurns, operation) {
+    if (!isOperationCurrent(operation)) return false;
+    const { scope } = operation;
+    const { chat, store } = scope;
+    const settings = getSettings();
+    const eligible = visibleTurns.filter(turn => turn.index > store.summarizedUpTo);
+    if (eligible.length === 0) {
+        for (const turn of visibleTurns) {
+            if (!isOperationCurrent(operation)) return false;
+            if (turn.index <= store.summarizedUpTo) await ghostMessage(turn.index, scope);
         }
-        await saveChatStore();
-        trace('<<< EXITING summarizeOneBatchFromTurns - REPAIRED GHOSTING');
+        await saveChatStore(scope);
         return false;
     }
-
-    const batchSize = Math.min(s.turnsPerSummary, eligibleTurns.length);
-    const batch = eligibleTurns.slice(0, batchSize);
-
-    trace('  batchSize:', batchSize);
-    trace('  batch prepared:', batch.length);
-
-    if (batch.length === 0) {
-        trace('<<< EXITING summarizeOneBatchFromTurns - EMPTY BATCH');
-        return false;
-    }
-
-    const startIdx = batch[0].index;
-    const endIdx = batch[batch.length - 1].index;
-
-    trace('  startIdx:', startIdx, 'endIdx:', endIdx);
-    trace('  store.summarizedUpTo:', store.summarizedUpTo);
-
-    if (!store.layers[0]) store.layers[0] = [];
-
-    // ─── Start from the message AFTER the last summarized one ───
-    const passageStart = store.summarizedUpTo < 0 ? 0 : store.summarizedUpTo + 1;
-
-    trace('  passageStart:', passageStart, 'endIdx:', endIdx);
-
-    // ─── SANITY CHECK: passageStart should always be <= endIdx ───
-    if (passageStart > endIdx) {
-        trace('  CRITICAL: passageStart > endIdx! This should never happen.');
-        trace('  This likely means the batch was already summarized.');
-        trace('<<< EXITING - passageStart > endIdx');
+    const batch = eligible.slice(0, settings.turnsPerSummary);
+    if (!batch.length) return false;
+    const start = store.summarizedUpTo + 1;
+    const end = batch[batch.length - 1].index;
+    if (start > end) return 'EMPTY_SKIP';
+    const source = snapshotSourceRange(chat, start, end);
+    const passage = buildPassageFromRange(chat, start, end);
+    if (!passage.trim()) {
+        store.summarizedUpTo = Math.max(store.summarizedUpTo, end);
+        await saveChatStore(scope);
         return 'EMPTY_SKIP';
     }
-
-    trace('  About to call buildPassageFromRange...');
-
-    try {
-        const storyTxt = buildPassageFromRange(chat, passageStart, endIdx);
-        trace('  buildPassageFromRange returned, length:', storyTxt?.length ?? 'UNDEFINED');
-
-        if (!storyTxt.trim()) {
-            trace('  <<< EXITING - storyTxt is empty after trim');
-            trace('  This suggests all messages in range [' + passageStart + ', ' + endIdx + '] are hidden or empty');
-
-            // --- FIX: Advance pointer so we don't get stuck on these empty indexes ---
-            store.summarizedUpTo = Math.max(store.summarizedUpTo, endIdx);
-            await saveChatStore();
-
-            return 'EMPTY_SKIP';
-        }
-
-        trace('  About to call buildFullContext...');
-        const contextStr = buildFullContext(0);
-        trace('  buildFullContext returned, length:', contextStr?.length ?? 'UNDEFINED');
-
-        trace('  About to call callSummarizer...');
-        const summary = await callSummarizer(storyTxt, contextStr);
-        trace('  callSummarizer returned, length:', summary?.length ?? 'UNDEFINED');
-
-        if (!summary) {
-            log('Summarization failed for batch, leaving turns intact for next attempt.');
-            trace('  <<< EXITING - summary is empty');
-            return false;
-        }
-
-        store.layers[0].push({
-            text: summary,
-            turnRange: [passageStart, endIdx],
-            timestamp: Date.now(),
-        });
-
-        store.summarizedUpTo = Math.max(store.summarizedUpTo, endIdx);
-        trace('  Updated store.summarizedUpTo to:', store.summarizedUpTo);
-
-        await saveChatStore();
-        await ghostMessagesUpTo(endIdx, passageStart);
-        await maybePromoteLayer(0);
-        await saveChatStore();
-
-        try {
-            const ctx = SillyTavern.getContext();
-            if (ctx.saveChat) await ctx.saveChat();
-        } catch (e) {
-            log('Could not save chat:', e);
-        }
-
-        trace('<<< EXITING summarizeOneBatchFromTurns - SUCCESS');
-        return true;
-
-    } catch (err) {
-        trace('  CAUGHT EXCEPTION:', {
-            name: err?.name,
-            message: err?.message,
-            stack: err?.stack?.substring?.(0, 200),
-        });
-        console.error(LOG_PREFIX, 'summarizeOneBatchFromTurns exception:', err);
-        trace('<<< EXITING summarizeOneBatchFromTurns - EXCEPTION');
+    toastr.info(`正在为 ${batch.length} 个轮次生成摘要…`, 'Summaryception', { timeOut: TUNING.toastMedium, progressBar: true });
+    const summary = await callSummarizer(passage, buildFullContext(0), operation);
+    if (!summary || !isOperationCurrent(operation)) return false;
+    if (!isSourceRangeCurrent(scope, start, source)) {
+        operation.controller.abort();
+        toastr.warning('源消息已变化，已丢弃过期摘要。', 'Summaryception');
         return false;
     }
+    store.layers[0] ??= [];
+    store.layers[0].push({ text: summary, turnRange: [start, end], timestamp: Date.now() });
+    store.summarizedUpTo = Math.max(store.summarizedUpTo, end);
+    // Once a batch is committed, finish saving it before honoring Stop. Every
+    // host operation still checks identity, including between visibility ranges.
+    await ghostMessagesUpTo(end, start, scope);
+    if (isOperationCurrent(operation)) await maybePromoteLayer(0, operation);
+    await saveChatStore(scope);
+    return true;
 }
 
-// ─── Core: Catchup Processing ────────────────────────────────────────
-
-async function runCatchup(visibleTurns, overflow) {
-
-    trace('>>> ENTERING runCatchup');
-    trace('  visibleTurns:', visibleTurns?.length ?? 'UNDEFINED');
-    trace('  overflow:', overflow);
-
-    const s = getSettings();
-    const totalBatches = Math.ceil(overflow / s.turnsPerSummary);
+async function runCatchup(visibleTurns, overflow, operation = null) {
+    const ownsOperation = !operation;
+    operation ??= beginChatOperation();
+    if (!operation) return;
+    const settings = getSettings();
+    const totalBatches = Math.ceil(overflow / settings.turnsPerSummary);
     let completed = 0;
-    let failed = 0;
-    let cancelled = false;
-
-    trace('  totalBatches calculated:', totalBatches);
-
-    const progressToast = toastr.info(
-        `正在处理积压：0 / ${totalBatches} 批（0%）`,
-        'Summaryception — 补摘要',
-        {
-            timeOut: 0,
-            extendedTimeOut: 0,
-            tapToDismiss: false,
-            closeButton: true,
-            onCloseClick: () => {
-                cancelled = true;
-                abortSummarization();
-            },
-        }
-    );
-
-    isSummarizing = true;
-
+    let failures = 0;
+    const progressToast = toastr.info(`正在处理积压：0 / ${totalBatches} 批`, 'Summaryception — 补摘要', {
+        timeOut: 0, extendedTimeOut: 0, tapToDismiss: false, closeButton: true,
+        onCloseClick: () => operation.controller.abort(),
+    });
     try {
-        let consecutiveFailures = 0;
-
-        while (!cancelled) {
-            trace(`  Loop iteration - completed: ${completed}, failed: ${failed}`);
-
-            const { chat } = SillyTavern.getContext();
-            const allAssistantTurns = getAssistantTurns(chat);
-            const currentVisible = allAssistantTurns.filter(t => !chat[t.index].extra?.sc_ghosted);
-
-            trace(`  currentVisible turns: ${currentVisible.length}, verbatimTurns limit: ${s.verbatimTurns}`);
-
-            if (currentVisible.length <= s.verbatimTurns) {
-                trace('  Visible turns now within limit, breaking');
+        while (isOperationCurrent(operation)) {
+            const { chat } = operation.scope;
+            const currentVisible = getAssistantTurns(chat).filter(turn => !chat[turn.index].extra?.sc_ghosted);
+            if (currentVisible.length <= settings.verbatimTurns) break;
+            const result = await summarizeOneBatchFromTurns(currentVisible, operation);
+            if (!isOperationCurrent(operation)) break;
+            if (result === true) {
+                completed++;
+                failures = 0;
+            } else if (result === 'EMPTY_SKIP') {
+                failures = 0;
+            } else if (++failures >= TUNING.consecutiveFailureLimit) {
+                toastr.error('连续摘要失败，补摘要已停止。已保存的进度会保留。', 'Summaryception');
                 break;
             }
-
-            trace('  About to call summarizeOneBatchFromTurns...');
-            const result = await summarizeOneBatchFromTurns(currentVisible);
-
-            if (result === true) {
-                trace('  >>> summarizeOneBatchFromTurns returned SUCCESS');
-                completed++;
-                consecutiveFailures = 0;
-            } else if (result === 'EMPTY_SKIP') {
-                trace('  >>> summarizeOneBatchFromTurns returned EMPTY_SKIP (skipping empty system/hidden cards)');
-                consecutiveFailures = 0;
-            } else {
-                trace('  >>> summarizeOneBatchFromTurns returned FAILURE');
-                failed++;
-                consecutiveFailures++;
-
-                if (consecutiveFailures >= TUNING.consecutiveFailureLimit) {
-                    toastr.error(
-                        `连续失败 ${TUNING.consecutiveFailureLimit} 次 — API 可能不可用。已暂停补摘要。进度已保存，将在下一条消息时继续。`,
-                        'Summaryception',
-                        { timeOut: TUNING.toastError }
-                    );
-                    trace(`  ${TUNING.consecutiveFailureLimit} consecutive failures, breaking`);
-                    break;
-                }
+            $(progressToast).find('.toast-message').text(`正在处理：${completed} / ${totalBatches} 批\n点击 ✕ 暂停`);
+            await waitForDelay(TUNING.catchupInterBatchDelay, operation.controller.signal);
+        }
+        if (isChatScopeCurrent(operation.scope)) {
+            if (operation.controller.signal.aborted) {
+                toastr.info(`补摘要已停止，已完成 ${completed} 批。`, 'Summaryception');
+            } else if (!failures) {
+                toastr.success(`补摘要完成！已处理 ${completed} 批。`, 'Summaryception');
             }
-
-            const pct = Math.round((completed / totalBatches) * 100);
-            const failStr = failed > 0 ? ` | ${failed} 批失败` : '';
-            $(progressToast).find('.toast-message').text(
-                `正在处理：${completed} / ${totalBatches} 批（${pct}%）${failStr}\n点击 ✕ 暂停`
-            );
-
-            await new Promise(r => setTimeout(r, TUNING.catchupInterBatchDelay));
         }
-
-        toastr.clear(progressToast);
-
-        if (cancelled) {
-            toastr.warning(
-                `补摘要已暂停于 ${completed}/${totalBatches}。进度已保存 — 将在下一条消息时继续。`,
-                'Summaryception',
-                { timeOut: TUNING.toastLonger }
-            );
-        } else if (failed === 0) {
-            toastr.success(
-                `补摘要完成！已处理 ${completed} 批。`,
-                'Summaryception',
-                { timeOut: TUNING.toastLong }
-            );
-        } else {
-            toastr.warning(
-                `补摘要结束。成功 ${completed} 批，失败 ${failed} 批（将在下次触发时重试）。`,
-                'Summaryception',
-                { timeOut: TUNING.toastExtended }
-            );
+    } catch (error) {
+        if (error.name !== 'AbortError') {
+            console.error(LOG_PREFIX, error);
+            if (isChatScopeCurrent(operation.scope)) toastr.error('补摘要发生错误，处理已停止。', 'Summaryception');
         }
-
-        updateUI();
-
     } finally {
-        isSummarizing = false;
+        toastr.clear(progressToast);
+        if (ownsOperation) finishChatOperation(operation);
+        if (isChatScopeCurrent(operation.scope)) updateUI();
     }
 }
 
 // ─── Catch-Up Dialog ─────────────────────────────────────────────────
 
-async function showCatchupDialog(overflowCount, estimatedCalls) {
+async function showCatchupDialog(overflowCount, estimatedCalls, signal) {
     return new Promise((resolve) => {
         const s = getSettings();
 
@@ -1430,28 +1141,27 @@ async function showCatchupDialog(overflowCount, estimatedCalls) {
         </div>
         </div>
         `;
+        const finish = choice => {
+            signal?.removeEventListener('abort', onAbort);
+            overlay.remove();
+            resolve(choice);
+        };
+        const onAbort = () => finish('cancel');
+        if (signal?.aborted) return finish('cancel');
+        signal?.addEventListener('abort', onAbort, { once: true });
         document.body.appendChild(overlay);
-
-        overlay.querySelector('#sc_catchup_full').addEventListener('click', () => {
-            overlay.remove();
-            resolve('catchup');
-        });
-        overlay.querySelector('#sc_catchup_skip').addEventListener('click', () => {
-            overlay.remove();
-            resolve('skip');
-        });
-        overlay.querySelector('#sc_catchup_partial').addEventListener('click', () => {
-            overlay.remove();
-            resolve('partial');
-        });
+        overlay.querySelector('#sc_catchup_full').addEventListener('click', () => finish('catchup'));
+        overlay.querySelector('#sc_catchup_skip').addEventListener('click', () => finish('skip'));
+        overlay.querySelector('#sc_catchup_partial').addEventListener('click', () => finish('partial'));
     });
 }
 
 // ─── Core: Layer Promotion ("ception") ──────────────────────────────
 
-async function maybePromoteLayer(layerIndex) {
+async function maybePromoteLayer(layerIndex, operation) {
+    if (!isOperationCurrent(operation)) return;
     const s = getSettings();
-    const store = getChatStore();
+    const { store } = operation.scope;
 
     if (layerIndex >= s.maxLayers - 1) {
         log(`Max layer depth (${s.maxLayers}) reached.`);
@@ -1481,15 +1191,15 @@ async function maybePromoteLayer(layerIndex) {
         );
 
         if (layer.length > s.snippetsPerLayer) {
-            await maybePromoteLayer(layerIndex);
+            await maybePromoteLayer(layerIndex, operation);
         }
         if (destLayer.length > s.snippetsPerLayer) {
-            await maybePromoteLayer(layerIndex + 1);
+            await maybePromoteLayer(layerIndex + 1, operation);
         }
         return;
     }
 
-    const toMerge = layer.splice(0, s.snippetsPerPromotion);
+    const toMerge = layer.slice(0, s.snippetsPerPromotion);
     const storyTxt = toMerge.map(sn => sn.text).join(' ');
     const contextStr = buildFullContext(layerIndex + 1);
 
@@ -1499,11 +1209,10 @@ async function maybePromoteLayer(layerIndex) {
         { timeOut: TUNING.toastMedium, progressBar: true }
     );
 
-    const metaSummary = await callSummarizer(storyTxt, contextStr);
-    if (!metaSummary) {
-        layer.unshift(...toMerge);
-        return;
-    }
+    const metaSummary = await callSummarizer(storyTxt, contextStr, operation);
+    if (!metaSummary || !isOperationCurrent(operation)) return;
+    if (!toMerge.every((snippet, index) => layer[index] === snippet)) return;
+    layer.splice(0, toMerge.length);
 
     destLayer.push({
         text: metaSummary,
@@ -1515,10 +1224,10 @@ async function maybePromoteLayer(layerIndex) {
     log(`Layer ${layerIndex + 1} now has ${destLayer.length} snippets`);
 
     if (layer.length > s.snippetsPerLayer) {
-        await maybePromoteLayer(layerIndex);
+        await maybePromoteLayer(layerIndex, operation);
     }
     if (destLayer.length > s.snippetsPerLayer) {
-        await maybePromoteLayer(layerIndex + 1);
+        await maybePromoteLayer(layerIndex + 1, operation);
     }
 }
 
@@ -1534,15 +1243,15 @@ function assembleSummaryBlock() {
 
     for (let i = store.layers.length - 1; i >= 1; i--) {
         const layer = store.layers[i];
-        if (!layer || layer.length === 0) continue;
+        if (!Array.isArray(layer) || layer.length === 0) continue;
         for (const sn of layer) {
-            snippets.push(sn.text);
+            if (sn && typeof sn.text === 'string') snippets.push(sn.text);
         }
     }
 
     if (store.layers[0] && store.layers[0].length > 0) {
         for (const sn of store.layers[0]) {
-            snippets.push(sn.text);
+            if (sn && typeof sn.text === 'string') snippets.push(sn.text);
         }
     }
 
@@ -1588,29 +1297,30 @@ function updateInjection() {
 
 function onMessageReceived(messageIndex) {
     if (!getSettings().enabled) return;
-    try {
-        const { chat } = SillyTavern.getContext();
-        const msg = chat[messageIndex];
-        if (msg && !msg.is_user && !msg.is_system) {
-            log('New assistant message at index', messageIndex);
-            setTimeout(async () => {
-                await maybeSummarizeTurns();
-                updateInjection();
-                updateUI();
-            }, TUNING.messageReceivedDelay);
+    const scope = captureChatScope();
+    const message = scope.chat[messageIndex];
+    if (!message || message.is_user || message.is_system) return;
+    clearTimeout(messageReceivedTimer);
+    messageReceivedTimer = setTimeout(async () => {
+        if (!isChatScopeCurrent(scope)) return;
+        await maybeSummarizeTurns();
+        if (isChatScopeCurrent(scope)) {
+            updateInjection();
+            updateUI();
         }
-    } catch (e) {
-        log('onMessageReceived error:', e);
-    }
+    }, TUNING.messageReceivedDelay);
 }
 
 function onChatChanged() {
-    log('Chat changed.');
+    chatEpoch++;
+    abortSummarization();
+    clearTimeout(messageReceivedTimer);
+    clearTimeout(chatChangedTimer);
     catchupDismissed = false;
-    setTimeout(async () => {
-        await repairIfBranched();
-        updateInjection();
-        updateUI();
+    _lastInjected = null;
+    const scope = captureChatScope();
+    chatChangedTimer = setTimeout(async () => {
+        await runChatMutation(scope, repairIfBranched);
     }, TUNING.chatChangedDelay);
 }
 
@@ -1652,28 +1362,9 @@ function registerSlashCommands() {
 
         SlashCommandParser.addCommandObject(SlashCommand.fromProps({
             name: 'sc-clear',
-            callback: async () => {
-                await unghostAllMessages();
-
-                const store = getChatStore();
-                store.layers.length = 0;
-                store.summarizedUpTo = -1;
-                store.ghostedIndices = [];
-
-                const { chatMetadata } = SillyTavern.getContext();
-                chatMetadata[MODULE_NAME] = store;
-
-                await saveChatStore();
-                try {
-                    const ctx2 = SillyTavern.getContext();
-                    if (ctx2.saveChat) await ctx2.saveChat();
-                } catch (e) {
-                    log('Could not save chat:', e);
-                }
-                updateInjection();
-                updateUI();
-                return 'Summaryception 记忆已清空，消息已取消隐藏。';
-            },
+            callback: async () => await clearChatMemory(captureChatScope())
+                ? 'Summaryception 记忆已清空，扩展隐藏的消息已恢复。'
+                : '操作已停止，未清空记忆。',
             helpString: '清空本聊天的全部 Summaryception 记忆并取消消息隐藏',
         }));
 
@@ -1748,11 +1439,11 @@ function updateUI() {
         if (store.layers) {
             for (let i = store.layers.length - 1; i >= 0; i--) {
                 const layer = store.layers[i];
-                if (layer && layer.length > 0) {
+                if (Array.isArray(layer) && layer.length > 0) {
                     const label = i === 0 ? '第 0 层（轮次摘要）' : `第 ${i} 层（深度 ${i} 元摘要）`;
                     statsHtml += `<div class="sc-layer-stat">
                     <span class="sc-layer-label">${label}:</span>
-                    <strong>${layer.length}</strong> / ${s.snippetsPerLayer} 个片段
+                    <strong>${layer.length}</strong> / ${escapeHtml(s.snippetsPerLayer)} 个片段
                     </div>`;
                 }
             }
@@ -1801,7 +1492,8 @@ function updateCustomPromptSlots() {
 }
 
 function updateSnippetBrowser() {
-    const store = getChatStore();
+    const browserScope = captureChatScope();
+    const { store } = browserScope;
     let html = '';
 
     if (!store.layers || store.layers.every(l => !l || l.length === 0)) {
@@ -1809,15 +1501,16 @@ function updateSnippetBrowser() {
     } else {
         for (let i = store.layers.length - 1; i >= 0; i--) {
             const layer = store.layers[i];
-            if (!layer || layer.length === 0) continue;
+            if (!Array.isArray(layer) || layer.length === 0) continue;
             const label = i === 0 ? '第 0 层（轮次摘要）' : `第 ${i} 层（元摘要）`;
             html += `<div class="sc-browser-layer"><div class="sc-browser-layer-title">${label}</div>`;
             for (let j = 0; j < layer.length; j++) {
                 const sn = layer[j];
+                if (!sn || typeof sn.text !== 'string') continue;
                 const rangeStr = sn.turnRange
-                    ? `轮次 ${sn.turnRange[0]}–${sn.turnRange[1]}`
+                    ? `轮次 ${escapeHtml(sn.turnRange[0])}–${escapeHtml(sn.turnRange[1])}`
                     : sn.mergedCount
-                        ? `合并 ${sn.mergedCount} 个片段（来自第 ${sn.fromLayer} 层）`
+                        ? `合并 ${escapeHtml(sn.mergedCount)} 个片段（来自第 ${escapeHtml(sn.fromLayer)} 层）`
                         : '';
                 const seedStr = sn.promoted ? ' 🌱' : '';
                 const canRedo = (i === 0 && sn.turnRange);
@@ -1838,167 +1531,152 @@ function updateSnippetBrowser() {
 
     $('#sc_snippet_browser').html(html);
 
-    // Edit snippet on click
+    // Every callback retains the chat and snippet that produced this DOM.
     $('.sc-snippet-text').off('click').on('click', function () {
-        const layerIdx = parseInt($(this).data('layer'));
-        const snippetIdx = parseInt($(this).data('idx'));
-        const layer = store.layers[layerIdx];
-        if (!layer || !layer[snippetIdx]) return;
-
-        const sn = layer[snippetIdx];
-        const textEl = $(this);
-
-        const textarea = $('<textarea class="sc-snippet-edit"></textarea>')
-            .val(sn.text)
-            .on('keydown', async function (e) {
-                if (e.key === 'Enter' && !e.shiftKey) {
-                    e.preventDefault();
-                    const newText = $(this).val().trim();
-                    if (newText) {
-                        sn.text = newText;
-                        await saveChatStore();
-                        updateInjection();
-                        toastr.success('片段已更新', 'Summaryception', { timeOut: TUNING.toastShort });
-                    }
-                    updateSnippetBrowser();
-                } else if (e.key === 'Escape') {
-                    updateSnippetBrowser();
+        if (!isChatScopeCurrent(browserScope)) return;
+        const layerIndex = Number($(this).data('layer'));
+        const snippetIndex = Number($(this).data('idx'));
+        const snippet = store.layers[layerIndex]?.[snippetIndex];
+        if (!snippet) return;
+        let settled = false;
+        const commit = async element => {
+            if (settled) return;
+            settled = true;
+            const text = $(element).val().trim();
+            if (text && text !== snippet.text) {
+                await runChatMutation(browserScope, async scope => {
+                    if (scope.store.layers[layerIndex]?.[snippetIndex] !== snippet) return;
+                    snippet.text = text;
+                    await saveChatStore(scope);
+                });
+            } else if (isChatScopeCurrent(browserScope)) updateSnippetBrowser();
+        };
+        const textarea = $('<textarea class="sc-snippet-edit"></textarea>').val(snippet.text)
+            .on('keydown', async function (event) {
+                if (event.key === 'Enter' && !event.shiftKey) {
+                    event.preventDefault();
+                    await commit(this);
+                } else if (event.key === 'Escape') {
+                    settled = true;
+                    if (isChatScopeCurrent(browserScope)) updateSnippetBrowser();
                 }
-            })
-            .on('blur', async function () {
-                const newText = $(this).val().trim();
-                if (newText && newText !== sn.text) {
-                    sn.text = newText;
-                    await saveChatStore();
-                    updateInjection();
-                    toastr.success('片段已更新', 'Summaryception', { timeOut: TUNING.toastShort });
-                }
-                updateSnippetBrowser();
-            });
-
-        textEl.replaceWith(textarea);
-
-        // Auto-size to fit content
+            }).on('blur', async function () { await commit(this); });
+        $(this).replaceWith(textarea);
         textarea[0].style.height = 'auto';
         textarea[0].style.height = textarea[0].scrollHeight + 'px';
-
         textarea.focus().select();
     });
-
-    // Redo snippet
     $('.sc-snippet-redo').off('click').on('click', async function () {
-        const layerIdx = parseInt($(this).closest('.sc-snippet').data('layer'));
-        const snippetIdx = parseInt($(this).closest('.sc-snippet').data('idx'));
-        const store = getChatStore();
-        const layer = store.layers[layerIdx];
-        if (!layer || !layer[snippetIdx]) return;
-
-        const sn = layer[snippetIdx];
-
-        if (!sn.turnRange) {
-            toastr.warning(
-                '只有第 0 层（轮次摘要）的片段可以重新生成。已提升的元摘要没有对应的源轮次。',
-                'Summaryception',
-                { timeOut: TUNING.toastLonger }
-            );
-            return;
-        }
-
-        if (isSummarizing) {
-            toastr.warning('正在摘要，请稍候。', 'Summaryception');
-            return;
-        }
-
-        const [rangeStart, rangeEnd] = sn.turnRange;
-        const { chat } = SillyTavern.getContext();
-
-        if (!confirm(`要为轮次 ${rangeStart}–${rangeEnd} 重新生成摘要吗？`)) return;
-
-        isSummarizing = true;
-        const btn = $(this);
-        btn.prop('disabled', true).removeClass('fa-rotate-right').addClass('fa-spinner fa-spin');
-
-        try {
-            const storyTxt = buildPassageFromRange(chat, rangeStart, rangeEnd);
-
-            if (!storyTxt.trim()) {
-                toastr.error('源轮次为空 — 无法重新生成。', 'Summaryception');
-                return;
-            }
-
-            const contextParts = [];
-            for (let i = store.layers.length - 1; i >= 0; i--) {
-                const l = store.layers[i];
-                if (!l) continue;
-                for (let j = 0; j < l.length; j++) {
-                    if (i === layerIdx && j === snippetIdx) continue;
-                    contextParts.push(l[j].text);
-                }
-            }
-            const contextStr = contextParts.length > 0 ? contextParts.join(' ') : '(none yet)';
-
-            toastr.info(`正在为轮次 ${rangeStart}–${rangeEnd} 重新生成摘要…`, 'Summaryception', {
-                timeOut: TUNING.toastMedium,
-                progressBar: true,
-            });
-
-            const newSummary = await callSummarizer(storyTxt, contextStr);
-
-            if (!newSummary) {
-                toastr.error('重新生成失败 — 已保留原片段。', 'Summaryception');
-                return;
-            }
-
-            sn.text = newSummary;
-            sn.timestamp = Date.now();
-            sn.regenerated = true;
-
-            await saveChatStore();
-            updateInjection();
-            updateUI();
-
-            toastr.success(`已为轮次 ${rangeStart}–${rangeEnd} 重新生成片段`, 'Summaryception', { timeOut: TUNING.toastMedium });
-
-        } finally {
-            isSummarizing = false;
-            btn.prop('disabled', false).removeClass('fa-spinner fa-spin').addClass('fa-rotate-right');
-        }
+        const layerIndex = Number($(this).closest('.sc-snippet').data('layer'));
+        const snippetIndex = Number($(this).closest('.sc-snippet').data('idx'));
+        await regenerateSnippet(browserScope, layerIndex, snippetIndex);
     });
-
-    // Delete snippet
     $('.sc-snippet-delete').off('click').on('click', async function () {
-        const layerIdx = parseInt($(this).closest('.sc-snippet').data('layer'));
-        const snippetIdx = parseInt($(this).closest('.sc-snippet').data('idx'));
-        const layer = store.layers[layerIdx];
-        if (layer) {
-            layer.splice(snippetIdx, 1);
+        const layerIndex = Number($(this).closest('.sc-snippet').data('layer'));
+        const snippetIndex = Number($(this).closest('.sc-snippet').data('idx'));
+        const snippet = store.layers[layerIndex]?.[snippetIndex];
+        if (!snippet) return;
+        await runChatMutation(browserScope, async scope => {
+            const layer = scope.store.layers[layerIndex];
+            if (layer?.[snippetIndex] !== snippet) return;
+            layer.splice(snippetIndex, 1);
+            const ends = (scope.store.layers[0] || []).map(sn => sn?.turnRange?.[1]).filter(Number.isSafeInteger);
+            scope.store.summarizedUpTo = ends.length ? ends.reduce((max, end) => Math.max(max, end), -1) : -1;
+            await saveChatStore(scope);
+        });
+    });
+}
 
-            if (store.layers[0] && store.layers[0].length > 0) {
-                const maxEnd = Math.max(...store.layers[0]
-                    .filter(sn => sn.turnRange)
-                    .map(sn => sn.turnRange[1]));
-                store.summarizedUpTo = maxEnd;
-            } else {
-                store.summarizedUpTo = -1;
-            }
-
-            await saveChatStore();
+async function regenerateSnippet(scope, layerIndex, snippetIndex) {
+    if (!isChatScopeCurrent(scope)) return false;
+    const snippet = scope.store.layers[layerIndex]?.[snippetIndex];
+    const range = snippet?.turnRange;
+    if (layerIndex !== 0 || !Array.isArray(range) || range.length !== 2
+        || !range.every(Number.isSafeInteger) || range[0] < 0
+        || range[1] < range[0] || range[1] >= scope.chat.length) return false;
+    if (activeOperation) {
+        toastr.warning('正在处理记忆，请稍候。', 'Summaryception');
+        return false;
+    }
+    if (!confirm(`要为轮次 ${range[0]}–${range[1]} 重新生成摘要吗？`)) return false;
+    const operation = beginChatOperation('summary', scope);
+    if (!operation) return false;
+    const originalText = snippet.text;
+    const source = snapshotSourceRange(scope.chat, range[0], range[1]);
+    try {
+        const passage = buildPassageFromRange(scope.chat, range[0], range[1]);
+        if (!passage.trim()) return false;
+        const context = scope.store.layers.slice().reverse().flat()
+            .filter(item => item && item !== snippet && typeof item.text === 'string')
+            .map(item => item.text).join(' ');
+        const summary = await callSummarizer(passage, context, operation);
+        if (!summary || !isOperationCurrent(operation)
+            || scope.store.layers[layerIndex]?.[snippetIndex] !== snippet
+            || snippet.text !== originalText || !isSourceRangeCurrent(scope, range[0], source)) return false;
+        snippet.text = summary;
+        snippet.timestamp = Date.now();
+        snippet.regenerated = true;
+        await saveChatStore(scope);
+        return true;
+    } catch (error) {
+        if (error.name !== 'AbortError') {
+            console.error(LOG_PREFIX, error);
+            if (isChatScopeCurrent(scope)) toastr.error('重新生成失败，请查看控制台。', 'Summaryception');
+        }
+        return false;
+    } finally {
+        finishChatOperation(operation);
+        if (isChatScopeCurrent(scope)) {
             updateInjection();
             updateUI();
-            toastr.info(`已从第 ${layerIdx} 层移除片段`, 'Summaryception');
         }
+    }
+}
+
+async function clearChatMemory(scope) {
+    return await runChatMutation(scope, async current => {
+        await unghostAllMessages(current);
+        assertChatScope(current);
+        current.store.layers = [];
+        current.store.summarizedUpTo = -1;
+        current.store.ghostedIndices = [];
+        await saveChatStore(current);
     });
+}
+
+async function importMemoryFile(file, scope) {
+    try {
+        if (file.size > 25 * 1024 * 1024) throw new Error('记忆文件超过 25 MiB，请拆分后重试。');
+        const text = await file.text();
+        if (!isChatScopeCurrent(scope)) return false;
+        const data = validateMemoryImport(JSON.parse(text), scope.chat.length);
+        return await runChatMutation(scope, async current => {
+            await unghostAllMessages(current);
+            assertChatScope(current);
+            current.store.layers = data.layers;
+            current.store.summarizedUpTo = data.summarizedUpTo;
+            current.store.ghostedIndices = [];
+            if (data.summarizedUpTo >= 0) await ghostMessagesUpTo(data.summarizedUpTo, 0, current);
+            await saveChatStore(current);
+            toastr.success('记忆已导入。', 'Summaryception');
+        });
+    } catch (error) {
+        console.error(LOG_PREFIX, error);
+        if (isChatScopeCurrent(scope)) toastr.error(error.message || '记忆文件无效。', 'Summaryception');
+        return false;
+    }
 }
 
 function escapeHtml(text) {
     const div = document.createElement('div');
-    div.textContent = text;
+    div.textContent = String(text ?? '');
     return div.innerHTML;
 }
 
 function bindUIEvents() {
     $(document).on('change', '#sc_enabled', function () {
         getSettings().enabled = $(this).prop('checked');
+        if (!getSettings().enabled) abortSummarization();
         saveSettings();
         updateInjection();
     });
@@ -2009,6 +1687,7 @@ function bindUIEvents() {
         saveSettings();
 
         if (s.pauseSummarization) {
+            abortSummarization();
             toastr.info(
                 '摘要已暂停。已有摘要仍会继续注入。使用“立即强制摘要”或取消暂停来补上进度。',
                 'Summaryception',
@@ -2088,92 +1767,20 @@ function bindUIEvents() {
     });
 
     $(document).on('click', '#sc_repair', async function () {
-        const { chat } = SillyTavern.getContext();
-        let repaired = 0;
-
-        const progressToast = toastr.info(
-            '正在扫描孤立消息…',
-            'Summaryception — 修复',
-            { timeOut: 0, extendedTimeOut: 0, tapToDismiss: false }
-        );
-
-        for (let i = 0; i < chat.length; i++) {
-            const m = chat[i];
-
-            const isStuckHidden = (m.is_system || m.is_hidden)
-            && !m.is_user
-            && !m.extra?.sc_ghosted
-            && m.mes
-            && m.mes.trim().length > 0;
-
-            if (isStuckHidden) {
-                try {
-                    await SillyTavern.getContext().executeSlashCommandsWithOptions(`/unhide ${i}`, { showOutput: false });
-                } catch (e) {
-                    log(`Repair: failed to unhide ${i}:`, e);
-                }
-
-                m.is_system = false;
-                delete m.is_hidden;
-
-                repaired++;
-
-                if (repaired % TUNING.repairProgressInterval === 0) {
-                    $(progressToast).find('.toast-message').text(
-                        `修复中：已找到 ${repaired} 条孤立消息…`
-                    );
-                }
-            }
-        }
-
-        toastr.clear(progressToast);
-
-        if (repaired > 0) {
-            try {
-                const ctx = SillyTavern.getContext();
-                if (ctx.saveChat) await ctx.saveChat();
-            } catch (e) {
-                log('Could not save chat:', e);
-            }
-            updateUI();
-            toastr.success(
-                `已修复 ${repaired} 条孤立消息。它们现在会重新对摘要器可见。`,
-                'Summaryception',
-                { timeOut: TUNING.toastLonger }
-            );
-        } else {
-            toastr.info('未发现孤立消息。', 'Summaryception', { timeOut: TUNING.toastMedium });
-        }
+        await runChatMutation(captureChatScope(), async scope => {
+            // Without ownership evidence, a hidden message may be user-hidden.
+            const orphaned = scope.chat.flatMap((message, index) =>
+                message?.extra?.sc_hide_owned === true && !message.extra.sc_ghosted ? [index] : []);
+            for (const index of orphaned) scope.chat[index].extra.sc_ghosted = true;
+            await unghostAllMessages(scope, orphaned);
+            await saveChatStore(scope);
+            toastr.info(`已修复 ${orphaned.length} 条由扩展隐藏的孤立消息。`, 'Summaryception');
+        });
     });
 
     $(document).on('click', '#sc_clear_memory', async function () {
-        if (!confirm('要清空本聊天的全部 Summaryception 记忆并取消所有消息隐藏吗？')) return;
-
-        try {
-            await unghostAllMessages();
-        } catch (e) {
-            console.error(LOG_PREFIX, 'Error during unghost (continuing with clear):', e);
-            toastr.warning('部分消息未能取消隐藏，但记忆仍会被清空。', 'Summaryception');
-        }
-
-        const store = getChatStore();
-        store.layers.length = 0;
-        store.summarizedUpTo = -1;
-        store.ghostedIndices = [];
-
-        const { chatMetadata } = SillyTavern.getContext();
-        chatMetadata[MODULE_NAME] = store;
-
-        await saveChatStore();
-        try {
-            const ctx = SillyTavern.getContext();
-            if (ctx.saveChat) await ctx.saveChat();
-        } catch (e) {
-            log('Could not save chat:', e);
-        }
-        updateInjection();
-        updateUI();
-        toastr.success('记忆已清空，消息已取消隐藏', 'Summaryception');
+        if (!confirm('要清空本聊天的 Summaryception 记忆并恢复扩展隐藏的消息吗？手动隐藏的消息会保留。')) return;
+        if (await clearChatMemory(captureChatScope())) toastr.success('记忆已清空，扩展隐藏的消息已恢复。', 'Summaryception');
     });
 
     $(document).on('click', '#sc_force_summarize', async function () {
@@ -2182,13 +1789,14 @@ function bindUIEvents() {
             toastr.warning('请先启用 Summaryception。');
             return;
         }
-        if (isSummarizing) {
+        if (activeOperation) {
             toastr.warning('正在摘要，请稍候。');
             return;
         }
         if (s.pauseSummarization) {
             log('Force Summarize overrides pause mode.');
         }
+        const scope = captureChatScope();
         $(this).prop('disabled', true).text(' 处理中…');
         try {
             catchupDismissed = false;
@@ -2206,20 +1814,20 @@ function bindUIEvents() {
             toastr.info(`有 ${overflow} 个轮次待处理。开始…`, 'Summaryception', { timeOut: TUNING.toastDefault });
 
             await runCatchup(visibleTurns, overflow);
-            updateInjection();
+            if (isChatScopeCurrent(scope)) updateInjection();
         } finally {
             $(this).prop('disabled', false).html('<i class="fa-solid fa-bolt"></i> 立即强制摘要');
-            updateUI();
+            if (isChatScopeCurrent(scope)) updateUI();
         }
     });
 
     $(document).on('click', '#sc_stop_summarize', function () {
-        if (!isSummarizing && !currentAbortController) {
+        if (!activeOperation || activeOperation.kind !== 'summary') {
             toastr.info('当前没有正在运行的任务。', 'Summaryception');
             return;
         }
         abortSummarization();
-        toastr.warning('摘要已停止。进度已保存。', 'Summaryception', { timeOut: TUNING.toastLong });
+        toastr.warning('正在停止摘要，已完成的进度会保留。', 'Summaryception', { timeOut: TUNING.toastLong });
         $(this).prop('disabled', true);
         setTimeout(() => $(this).prop('disabled', false), TUNING.stopButtonCooldown);
         updateUI();
@@ -2240,51 +1848,13 @@ function bindUIEvents() {
     });
 
     $(document).on('click', '#sc_import', function () {
+        const scope = captureChatScope();
         const input = document.createElement('input');
         input.type = 'file';
         input.accept = '.json';
-        input.onchange = async (e) => {
-            const file = e.target.files[0];
-            if (!file) return;
-            try {
-                const text = await file.text();
-                const data = JSON.parse(text);
-                if (!data.layers || !Array.isArray(data.layers)) {
-                    toastr.error('文件格式无效。');
-                    return;
-                }
-
-                const { chat } = SillyTavern.getContext();
-                const store = getChatStore();
-
-                await unghostAllMessages();
-
-                store.layers = data.layers;
-                store.summarizedUpTo = data.summarizedUpTo ?? -1;
-                store.ghostedIndices = data.ghostedIndices || [];
-
-                if (store.summarizedUpTo >= 0) {
-                    await ghostMessagesUpTo(store.summarizedUpTo);
-                }
-
-                await saveChatStore();
-                try {
-                    const ctx = SillyTavern.getContext();
-                    if (ctx.saveChat) await ctx.saveChat();
-                } catch (e) {
-                    log('Could not save chat:', e);
-                }
-                updateInjection();
-                updateUI();
-                toastr.success(
-                    `记忆已导入。已加载 ${store.layers.reduce((sum, l) => sum + (l?.length || 0), 0)} 个片段，消息已隐藏至索引 ${store.summarizedUpTo}。`,
-                               'Summaryception',
-                               { timeOut: TUNING.toastLong }
-                );
-            } catch (err) {
-                console.error(LOG_PREFIX, err);
-                toastr.error('导入失败 — 请查看控制台。');
-            }
+        input.onchange = async event => {
+            const file = event.target.files[0];
+            if (file) await importMemoryFile(file, scope);
         };
         input.click();
     });
@@ -2808,6 +2378,6 @@ async function fetchProfilesFallback(selectElement, currentValue) {
     eventSource.on(event_types.APP_READY, () => {
         updateInjection();
         updateUI();
-        console.log(LOG_PREFIX, 'v5.5.4 loaded. Connection Settings available');
+        console.log(LOG_PREFIX, 'v5.5.6 loaded. Connection Settings available');
     });
 })();
