@@ -45,36 +45,36 @@
 
             <hr class="sc-divider" />
 
-            <!-- ═══ Snippet Browser ═══ -->
-            <h4 class="sc-section-title">🗂️ 摘要片段浏览器</h4>
-            <div id="sc_snippet_browser" class="sc-snippet-browser"></div>
-
-            <hr class="sc-divider" />
-
-            <h4 class="sc-section-title">本聊天固定记忆</h4>
-            <div id="sc_pinned_preview" class="sc-memory-text"></div>
-            <button id="sc_edit_pinned" class="menu_button">编辑固定记忆</button>
-
-            <!-- ═══ Preview ═══ -->
-            <h4 class="sc-section-title">👁️ 注入预览</h4>
-            <textarea id="sc_preview" class="text_pole sc-textarea sc-preview" rows="6" readonly></textarea>
-            <div class="sc-button-row">
-                <button id="sc_refresh_preview" class="menu_button">
-                    <i class="fa-solid fa-rotate"></i> 刷新
-                </button>
-            </div>
-
-            <div class="sc-button-row">
-                <button id="sc_import" class="menu_button">
-                   <i class="fa-solid fa-download"></i> 导入记忆
-                </button>
-                <button id="sc_export" class="menu_button">
-                    <i class="fa-solid fa-upload"></i> 导出记忆
-                </button>
-                <button id="sc_clear_memory" class="menu_button menu_button_danger">
-                    <i class="fa-solid fa-trash"></i> 清空记忆
-                </button>
-            </div>
+            <section class="sc-memory-panel" aria-labelledby="sc_memory_title">
+                <h4 id="sc_memory_title" class="sc-section-title">本聊天记忆</h4>
+                <details open>
+                    <summary>摘要片段</summary>
+                    <div id="sc_snippet_browser" class="sc-snippet-browser"></div>
+                </details>
+                <details>
+                    <summary>固定记忆</summary>
+                    <div id="sc_pinned_preview" class="sc-memory-text"></div>
+                    <button id="sc_edit_pinned" class="menu_button">编辑固定记忆</button>
+                </details>
+                <details>
+                    <summary>注入预览</summary>
+                    <textarea id="sc_preview" aria-label="注入预览" class="text_pole sc-textarea sc-preview" rows="6" readonly></textarea>
+                    <button id="sc_refresh_preview" class="menu_button">
+                        <i class="fa-solid fa-rotate"></i> 刷新
+                    </button>
+                </details>
+                <div class="sc-button-row">
+                    <button id="sc_import" class="menu_button">
+                        <i class="fa-solid fa-download"></i> 导入记忆
+                    </button>
+                    <button id="sc_export" class="menu_button">
+                        <i class="fa-solid fa-upload"></i> 导出记忆
+                    </button>
+                    <button id="sc_clear_memory" class="menu_button menu_button_danger">
+                        <i class="fa-solid fa-trash"></i> 清空记忆
+                    </button>
+                </div>
+            </section>
 
             <hr class="sc-divider" />
 

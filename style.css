@@ -114,6 +114,19 @@
     background: rgba(255, 107, 107, 0.15);
 }
 
+.sc-memory-panel > details {
+    border-bottom: 1px solid var(--SmartThemeBorderColor, #444);
+}
+
+.sc-memory-panel > details > summary {
+    cursor: pointer;
+    padding: 0.65em 0;
+}
+
+.sc-memory-panel > details[open] {
+    padding-bottom: 0.65em;
+}
+
 /* ─── Snippet Browser ─────────────────────────────────────────── */
 
 .sc-snippet-browser {
