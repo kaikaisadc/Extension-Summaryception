@@ -12,7 +12,7 @@
 import { sendSummarizerRequest } from './connectionutil.js';
 import { showMemoryDialog } from './memory-dialog.js';
 import { initConnectionUI } from './connection-ui.js';
-import { selectPendingTurns, sourceRanges, coverage, validateMemoryImport } from './memory.js';
+import { selectPendingTurns, sourceRanges, coverage, findChatRollback, planChatRollback, validateMemoryImport } from './memory.js';
 
 const MODULE_NAME = 'summaryception';
 const LOG_PREFIX = '[Summaryception]';
@@ -593,54 +593,24 @@ async function ghostMessagesUpTo(endIndex, startIndex = 0, scope = captureChatSc
 
 // ─── Branch Detection & Repair ───────────────────────────────────────
 
-function exceedsChatEnd(snippet, length) {
-    return snippet.triggerIndex >= length || sourceRanges(snippet).some(([, end]) => end >= length);
-}
-
 async function repairIfBranched(scope = captureChatScope()) {
     assertChatScope(scope);
     const { chat, store } = scope;
-
-    const outside = snippet => exceedsChatEnd(snippet, chat.length);
-    const affected = store.layers.flat().filter(outside);
-    if (!affected.length && store.summarizedUpTo < chat.length) return;
-
-    const last = chat.length - 1;
+    const rollback = findChatRollback(store, chat.length);
+    if (!rollback) return;
+    const { affected, last } = rollback;
     const location = last >= 0 ? `当前聊天末尾为 #${last}` : '当前聊天已清空';
-    const remove = affected.length && confirm(
-        `${location}，有 ${affected.length} 条摘要的触发楼层或来源楼层已被删除。\n确定：删除这些摘要，恢复仍存在且失去摘要覆盖的原文。\n取消：保留摘要文字，今后的新回复仍可被摘要。`
+    const remove = affected.size && confirm(
+        `${location}，有 ${affected.size} 条摘要的触发楼层或来源楼层已被删除。\n确定：删除这些摘要，恢复仍存在且失去摘要覆盖的原文。\n取消：保留摘要文字，今后的新回复仍可被摘要。`
     );
-    if (!remove) {
-        for (const snippet of affected) {
-            delete snippet.triggerIndex;
-            if (sourceRanges(snippet).every(([, end]) => end <= last)) continue;
-            snippet.sourceRanges = sourceRanges(snippet)
-                .filter(([start]) => start <= last)
-                .map(([start, end]) => [start, Math.min(end, last)]);
-            delete snippet.turnRange;
-            snippet.partialSource = true;
-        }
-        store.summarizedUpTo = Math.min(store.summarizedUpTo, last);
-        syncGhostedIndices(scope);
-        await saveChatStore(scope);
-        return;
-    }
-    const layers = store.layers.map(layer => layer.filter(snippet => !outside(snippet)));
-    const ranges = coverage(layers.flat());
-    let rangeIndex = 0;
-    const uncovered = [];
-    for (const [start, end] of coverage(affected)) {
-        for (let index = start; index <= Math.min(end, last); index++) {
-            while (ranges[rangeIndex]?.[1] < index) rangeIndex++;
-            if (!ranges[rangeIndex] || ranges[rangeIndex][0] > index) uncovered.push(index);
-        }
-    }
-    await unghostAllMessages(scope, uncovered);
+    const { layers, summarizedUpTo, uncovered } = planChatRollback(store, rollback, remove);
+    if (uncovered.length) await unghostAllMessages(scope, uncovered);
     assertChatScope(scope);
+    syncGhostedIndices(scope);
     store.layers = layers;
-    store.summarizedUpTo = ranges.at(-1)?.[1] ?? -1;
+    store.summarizedUpTo = summarizedUpTo;
     await saveChatStore(scope);
-    toastr.info('已删除受影响的摘要，并恢复失去摘要覆盖的原文。', 'Summaryception');
+    if (remove) toastr.info('已删除受影响的摘要，并恢复失去摘要覆盖的原文。', 'Summaryception');
 }
 
 // ─── Assistant Turn Utilities ────────────────────────────────────────
@@ -1259,8 +1229,7 @@ function onChatChanged() {
 
 async function onMessageDeleted() {
     const scope = captureChatScope();
-    if (scope.store.summarizedUpTo < scope.chat.length &&
-        !scope.store.layers.flat().some(sn => exceedsChatEnd(sn, scope.chat.length))) return;
+    if (!findChatRollback(scope.store, scope.chat.length)) return;
     if (activeOperation?.kind === 'mutation') await activeOperation.done;
     await runChatMutation(scope, repairIfBranched);
 }

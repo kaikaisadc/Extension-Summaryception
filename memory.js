@@ -20,6 +20,46 @@ export function coverage(snippets) {
     return merged;
 }
 
+// A shortened chat may cross a summary's trigger before crossing its sources.
+export function findChatRollback(store, length) {
+    const affected = new Set(store.layers.flat().filter(snippet =>
+        snippet.triggerIndex >= length || sourceRanges(snippet).some(([, end]) => end >= length)));
+    if (!affected.size && store.summarizedUpTo < length) return null;
+    return { affected, last: length - 1 };
+}
+
+function keepSurvivingSources(snippet, last) {
+    const copy = { ...snippet };
+    delete copy.triggerIndex;
+    const ranges = sourceRanges(snippet);
+    if (ranges.some(([, end]) => end > last)) {
+        copy.sourceRanges = ranges.filter(([start]) => start <= last)
+            .map(([start, end]) => [start, Math.min(end, last)]);
+        delete copy.turnRange;
+        copy.partialSource = true;
+    }
+    return copy;
+}
+
+export function planChatRollback(store, { affected, last }, remove) {
+    if (!remove) {
+        const layers = store.layers.map(layer => layer.map(snippet =>
+            affected.has(snippet) ? keepSurvivingSources(snippet, last) : snippet));
+        return { layers, summarizedUpTo: Math.min(store.summarizedUpTo, last), uncovered: [] };
+    }
+    const layers = store.layers.map(layer => layer.filter(snippet => !affected.has(snippet)));
+    const remaining = coverage(layers.flat());
+    const uncovered = [];
+    let rangeIndex = 0;
+    for (const [start, end] of coverage([...affected])) {
+        for (let index = start; index <= Math.min(end, last); index++) {
+            while (remaining[rangeIndex]?.[1] < index) rangeIndex++;
+            if (!remaining[rangeIndex] || remaining[rangeIndex][0] > index) uncovered.push(index);
+        }
+    }
+    return { layers, summarizedUpTo: remaining.at(-1)?.[1] ?? -1, uncovered };
+}
+
 // Validate before touching the current memory or its visibility state. Only copy
 // known fields; imported indices never establish ownership of hidden messages.
 export function validateMemoryImport(data, chatLength) {
