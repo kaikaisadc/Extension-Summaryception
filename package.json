@@ -1,11 +1,11 @@
 {
   "name": "summaryception",
-  "version": "5.5.6",
+  "version": "5.6.0",
   "private": true,
   "type": "module",
   "scripts": {
     "test": "node --test tests/*.test.cjs",
-    "check": "node --check index.js && node --check runtime.js && node --check connection-ui.js && node --check memory.js && node --check connectionutil.js"
+    "check": "node --check index.js && node --check runtime.js && node --check connection-ui.js && node --check memory.js && node --check memory-dialog.js && node --check connectionutil.js"
   },
   "engines": { "node": ">=20" },
   "devDependencies": {

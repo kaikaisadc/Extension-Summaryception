@@ -1,5 +1,5 @@
 /**
- * Summaryception v5.5.6 — Layered Recursive Summarization for SillyTavern
+ * Summaryception v5.6.0 — Layered Recursive Summarization for SillyTavern
  *
  * NON-DESTRUCTIVE: Uses SillyTavern's native /hide and /unhide commands
  * to exclude summarized messages from LLM context while keeping them
@@ -10,6 +10,7 @@
 
 // ─── Imports ─────────────────────────────────────────────────────────
 import { sendSummarizerRequest } from './connectionutil.js';
+import { showMemoryDialog } from './memory-dialog.js';
 import { initConnectionUI } from './connection-ui.js';
 import { selectPendingTurns, sourceRanges, coverage, validateMemoryImport } from './memory.js';
 
@@ -367,6 +368,7 @@ function getChatStore(context = SillyTavern.getContext()) {
 // Every async operation owns the chat identity, not just the shared chat array.
 // SillyTavern reuses that array when switching chats.
 let chatEpoch = 0;
+let chatDialogs = new AbortController();
 let activeOperation = null;
 let messageReceivedTimer = null;
 let chatChangedTimer = null;
@@ -591,41 +593,54 @@ async function ghostMessagesUpTo(endIndex, startIndex = 0, scope = captureChatSc
 
 // ─── Branch Detection & Repair ───────────────────────────────────────
 
-/**
- * Detect if the current chat was branched before the summarized point.
- * When ST creates a branch at message N, it copies messages 0..N into a new chat file.
- * But chatMetadata (including our store) is copied as-is, so summarizedUpTo might
- * point beyond the end of the new chat, and snippets may reference turns that
- * no longer exist in this branch.
- *
- * This function detects that condition and trims our store to match reality.
- */
+function exceedsChatEnd(snippet, length) {
+    return snippet.triggerIndex >= length || sourceRanges(snippet).some(([, end]) => end >= length);
+}
+
 async function repairIfBranched(scope = captureChatScope()) {
     assertChatScope(scope);
     const { chat, store } = scope;
 
-    if (store.summarizedUpTo < chat.length &&
-        !store.layers.flat().some(sn => sourceRanges(sn).some(([, end]) => end >= chat.length))) return;
+    const outside = snippet => exceedsChatEnd(snippet, chat.length);
+    const affected = store.layers.flat().filter(outside);
+    if (!affected.length && store.summarizedUpTo < chat.length) return;
 
-    // Older merged snippets lack provenance. Rebuild those from surviving chat.
-    const hasUnknownSources = store.layers.flat().some(sn => !sourceRanges(sn).length);
-    const layers = hasUnknownSources ? [] : store.layers.map(layer => layer.filter(snippet => {
-        const ranges = sourceRanges(snippet);
-        return ranges.length && ranges.every(([, end]) => end < chat.length);
-    }));
+    const last = chat.length - 1;
+    const location = last >= 0 ? `当前聊天末尾为 #${last}` : '当前聊天已清空';
+    const remove = affected.length && confirm(
+        `${location}，有 ${affected.length} 条摘要的触发楼层或来源楼层已被删除。\n确定：删除这些摘要，恢复仍存在且失去摘要覆盖的原文。\n取消：保留摘要文字，今后的新回复仍可被摘要。`
+    );
+    if (!remove) {
+        for (const snippet of affected) {
+            delete snippet.triggerIndex;
+            if (sourceRanges(snippet).every(([, end]) => end <= last)) continue;
+            snippet.sourceRanges = sourceRanges(snippet)
+                .filter(([start]) => start <= last)
+                .map(([start, end]) => [start, Math.min(end, last)]);
+            delete snippet.turnRange;
+            snippet.partialSource = true;
+        }
+        store.summarizedUpTo = Math.min(store.summarizedUpTo, last);
+        syncGhostedIndices(scope);
+        await saveChatStore(scope);
+        return;
+    }
+    const layers = store.layers.map(layer => layer.filter(snippet => !outside(snippet)));
     const ranges = coverage(layers.flat());
     let rangeIndex = 0;
     const uncovered = [];
-    for (let index = 0; index < chat.length; index++) {
-        while (ranges[rangeIndex]?.[1] < index) rangeIndex++;
-        if (!ranges[rangeIndex] || ranges[rangeIndex][0] > index) uncovered.push(index);
+    for (const [start, end] of coverage(affected)) {
+        for (let index = start; index <= Math.min(end, last); index++) {
+            while (ranges[rangeIndex]?.[1] < index) rangeIndex++;
+            if (!ranges[rangeIndex] || ranges[rangeIndex][0] > index) uncovered.push(index);
+        }
     }
     await unghostAllMessages(scope, uncovered);
     assertChatScope(scope);
     store.layers = layers;
     store.summarizedUpTo = ranges.at(-1)?.[1] ?? -1;
     await saveChatStore(scope);
-    toastr.info('已修复分支记忆，并恢复失去摘要覆盖的原文。', 'Summaryception');
+    toastr.info('已删除受影响的摘要，并恢复失去摘要覆盖的原文。', 'Summaryception');
 }
 
 // ─── Assistant Turn Utilities ────────────────────────────────────────
@@ -933,6 +948,9 @@ async function summarizeOneBatchFromTurns(visibleTurns, operation) {
     const start = store.summarizedUpTo + 1;
     const end = batch[batch.length - 1].index;
     if (start > end) return 'EMPTY_SKIP';
+    // The reply that made this batch eligible can be newer than its sources.
+    const triggerIndex = visibleTurns[visibleTurns.indexOf(batch.at(-1)) + Number(settings.verbatimTurns)]?.index ?? end;
+    const triggerMessage = chat[triggerIndex];
     const source = snapshotSourceRange(chat, start, end);
     const passage = buildPassageFromRange(chat, start, end);
     if (!passage.trim()) {
@@ -943,13 +961,13 @@ async function summarizeOneBatchFromTurns(visibleTurns, operation) {
     toastr.info(`正在为 ${batch.length} 个轮次生成摘要…`, 'Summaryception', { timeOut: TUNING.toastMedium, progressBar: true });
     const summary = await callSummarizer(passage, buildFullContext(0), operation);
     if (!summary || !isOperationCurrent(operation)) return false;
-    if (!isSourceRangeCurrent(scope, start, source)) {
+    if (chat[triggerIndex] !== triggerMessage || !isSourceRangeCurrent(scope, start, source)) {
         operation.controller.abort();
         toastr.warning('源消息已变化，已丢弃过期摘要。', 'Summaryception');
         return false;
     }
     store.layers[0] ??= [];
-    store.layers[0].push({ text: summary, turnRange: [start, end], timestamp: Date.now() });
+    store.layers[0].push({ text: summary, turnRange: [start, end], triggerIndex, timestamp: Date.now() });
     store.summarizedUpTo = Math.max(store.summarizedUpTo, end);
     // Once a batch is committed, finish saving it before honoring Stop. Every
     // host operation still checks identity, including between visibility ranges.
@@ -1124,9 +1142,12 @@ async function maybePromoteLayer(layerIndex, operation) {
     if (!toMerge.every((snippet, index) => layer[index] === snippet)) return;
     layer.splice(0, toMerge.length);
 
+    const triggerIndex = toMerge.reduce((max, sn) => Math.max(max, sn.triggerIndex ?? -1), -1);
     destLayer.push({
+        ...(triggerIndex >= 0 ? { triggerIndex } : {}),
         text: metaSummary,
         sourceRanges: toMerge.every(sn => sourceRanges(sn).length) ? coverage(toMerge) : [],
+        partialSource: toMerge.some(sn => sn.partialSource),
         fromLayer: layerIndex,
         mergedCount: toMerge.length,
         timestamp: Date.now(),
@@ -1148,7 +1169,7 @@ function assembleSummaryBlock() {
     const s = getSettings();
     const store = getChatStore();
 
-    if (!store.layers || store.layers.every(l => !l || l.length === 0)) return '';
+    const pinned = store.pinnedMemory?.trim();
 
     const snippets = [];
 
@@ -1166,9 +1187,8 @@ function assembleSummaryBlock() {
         }
     }
 
-    if (snippets.length === 0) return '';
-
-    return s.injectionTemplate.replace('{{summary}}', snippets.join(' '));
+    const summary = snippets.length ? s.injectionTemplate.replace('{{summary}}', () => snippets.join(' ')) : '';
+    return [pinned && `【固定记忆】\n${pinned}`, summary].filter(Boolean).join('\n\n');
 }
 
 // ─── Injection via setExtensionPrompt ────────────────────────────────
@@ -1223,6 +1243,8 @@ function onMessageReceived(messageIndex) {
 }
 
 function onChatChanged() {
+    chatDialogs.abort();
+    chatDialogs = new AbortController();
     chatEpoch++;
     abortSummarization();
     clearTimeout(messageReceivedTimer);
@@ -1233,6 +1255,14 @@ function onChatChanged() {
     chatChangedTimer = setTimeout(async () => {
         await runChatMutation(scope, repairIfBranched);
     }, TUNING.chatChangedDelay);
+}
+
+async function onMessageDeleted() {
+    const scope = captureChatScope();
+    if (scope.store.summarizedUpTo < scope.chat.length &&
+        !scope.store.layers.flat().some(sn => exceedsChatEnd(sn, scope.chat.length))) return;
+    if (activeOperation?.kind === 'mutation') await activeOperation.done;
+    await runChatMutation(scope, repairIfBranched);
 }
 
 function onGenerationStarted() {
@@ -1366,6 +1396,7 @@ function updateUI() {
 
         $('#sc_layer_stats').html(statsHtml);
 
+        $('#sc_pinned_preview').text(store.pinnedMemory || '暂无固定记忆');
         const preview = assembleSummaryBlock();
         $('#sc_preview').val(preview || '（空 — 暂无摘要）');
 
@@ -1432,6 +1463,7 @@ function updateSnippetBrowser() {
                 html += `<div class="sc-snippet" data-layer="${i}" data-idx="${j}">
                 <span class="sc-snippet-text" data-layer="${i}" data-idx="${j}" title="点击编辑">${escapeHtml(sn.text)}</span>
                 <span class="sc-snippet-meta">${rangeStr}${seedStr}</span>
+                <button class="sc-snippet-source menu_button" title="查看当前聊天的来源楼层">查看原文</button>
                 ${redoBtn}
                 <button class="sc-snippet-delete menu_button fa-solid fa-xmark" title="删除此片段"></button>
                 </div>`;
@@ -1476,6 +1508,22 @@ function updateSnippetBrowser() {
         textarea[0].style.height = 'auto';
         textarea[0].style.height = textarea[0].scrollHeight + 'px';
         textarea.focus().select();
+    });
+    $('.sc-snippet-source').on('click', function () {
+        if (!isChatScopeCurrent(browserScope)) return;
+        const row = $(this).closest('.sc-snippet');
+        const snippet = store.layers[row.data('layer')]?.[row.data('idx')];
+        if (!snippet) return;
+        const sections = coverage([snippet]).map(([start, end]) => {
+            const passage = buildPassageFromRange(browserScope.chat, start, Math.min(end, browserScope.chat.length - 1));
+            return `#${start}–#${end}\n${passage || '此范围暂无可显示的消息。'}`;
+        });
+        if (snippet.partialSource) sections.unshift('部分来源楼层已删除。');
+        if (!sections.length) sections.push('这条旧摘要没有记录来源楼层。');
+        const content = document.createElement('div');
+        content.className = 'sc-memory-text';
+        content.textContent = sections.join('\n\n');
+        void showMemoryDialog('摘要原文（当前聊天）', content, '关闭', null, chatDialogs.signal);
     });
     $('.sc-snippet-redo').off('click').on('click', async function () {
         const layerIndex = Number($(this).closest('.sc-snippet').data('layer'));
@@ -1524,6 +1572,22 @@ async function regenerateSnippet(scope, layerIndex, snippetIndex) {
         if (!summary || !isOperationCurrent(operation)
             || scope.store.layers[layerIndex]?.[snippetIndex] !== snippet
             || snippet.text !== originalText || !isSourceRangeCurrent(scope, range[0], source)) return false;
+        const comparison = document.createElement('div');
+        comparison.className = 'sc-summary-comparison';
+        for (const [label, text] of [['当前摘要', originalText], ['新摘要', summary]]) {
+            const section = document.createElement('section');
+            const heading = document.createElement('strong');
+            heading.textContent = label;
+            const body = document.createElement('p');
+            body.className = 'sc-memory-text';
+            body.textContent = text;
+            section.append(heading, body);
+            comparison.append(section);
+        }
+        const accept = await showMemoryDialog('对比摘要', comparison, '保留旧版', '采用新版', operation.controller.signal);
+        if (!accept || !isOperationCurrent(operation)
+            || scope.store.layers[layerIndex]?.[snippetIndex] !== snippet
+            || snippet.text !== originalText || !isSourceRangeCurrent(scope, range[0], source)) return false;
         snippet.text = summary;
         snippet.timestamp = Date.now();
         snippet.regenerated = true;
@@ -1548,6 +1612,7 @@ async function clearChatMemory(scope) {
     return await runChatMutation(scope, async current => {
         await unghostAllMessages(current);
         assertChatScope(current);
+        current.store.pinnedMemory = '';
         current.store.layers = [];
         current.store.summarizedUpTo = -1;
         current.store.ghostedIndices = [];
@@ -1564,6 +1629,7 @@ async function importMemoryFile(file, scope) {
         return await runChatMutation(scope, async current => {
             await unghostAllMessages(current);
             assertChatScope(current);
+            current.store.pinnedMemory = data.pinnedMemory ?? '';
             current.store.layers = data.layers;
             current.store.summarizedUpTo = data.summarizedUpTo;
             current.store.ghostedIndices = [];
@@ -1587,6 +1653,38 @@ function escapeHtml(text) {
 }
 
 function bindUIEvents() {
+    $(document).on('click', '#sc_edit_pinned', async () => {
+        const scope = captureChatScope();
+        const original = scope.store.pinnedMemory || '';
+        const content = document.createElement('div');
+        const input = document.createElement('textarea');
+        input.className = 'text_pole sc-textarea';
+        input.rows = 6;
+        input.setAttribute('aria-label', '本聊天固定记忆');
+        input.value = original;
+        const count = document.createElement('small');
+        const updateCount = async () => {
+            const text = input.value.trim();
+            const block = text ? `【固定记忆】\n${text}` : '';
+            count.textContent = block ? '正在估算 token…' : '0 token';
+            if (!block) return;
+            try {
+                const tokens = await scope.context.getTokenCountAsync(block);
+                if (text === input.value.trim()) count.textContent = `约 ${tokens} token`;
+            } catch {
+                if (text === input.value.trim()) count.textContent = `${text.length} 字符（分词器不可用）`;
+            }
+        };
+        input.addEventListener('input', updateCount);
+        void updateCount();
+        content.append(input, count);
+        const accept = await showMemoryDialog('编辑本聊天固定记忆', content, '取消', '保存', chatDialogs.signal);
+        if (!accept || !isChatScopeCurrent(scope)) return;
+        await runChatMutation(scope, async current => {
+            current.store.pinnedMemory = input.value.trim();
+            await saveChatStore(current);
+        });
+    });
     $(document).on('change', '#sc_enabled', function () {
         getSettings().enabled = $(this).prop('checked');
         if (!getSettings().enabled) abortSummarization();
@@ -2021,6 +2119,9 @@ export async function init() {
     initConnectionUI(getSettings, saveSettings);
 
     eventSource.on(event_types.MESSAGE_RECEIVED, onMessageReceived);
+    if (event_types.MESSAGE_DELETED) {
+        eventSource.on(event_types.MESSAGE_DELETED, () => { void onMessageDeleted(); });
+    }
     eventSource.on(event_types.CHAT_CHANGED, onChatChanged);
     eventSource.on(event_types.GENERATION_STARTED, onGenerationStarted);
 
@@ -2029,6 +2130,6 @@ export async function init() {
     eventSource.on(event_types.APP_READY, () => {
         updateInjection();
         updateUI();
-        console.log(LOG_PREFIX, 'v5.5.6 loaded. Connection Settings available');
+        console.log(LOG_PREFIX, 'v5.6.0 loaded. Connection Settings available');
     });
 }

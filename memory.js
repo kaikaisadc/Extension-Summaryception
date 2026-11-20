@@ -52,13 +52,17 @@ export function validateMemoryImport(data, chatLength) {
                     return [...range];
                 });
             }
+            if (Object.hasOwn(snippet, 'triggerIndex')) {
+                if (!integer(snippet.triggerIndex, 0, chatLength - 1)) invalid();
+                copy.triggerIndex = snippet.triggerIndex;
+            }
             for (const key of ['timestamp', 'fromLayer', 'seedFromLayer', 'mergedCount']) {
                 if (Object.hasOwn(snippet, key)) {
                     if (!integer(snippet[key], key === 'mergedCount' ? 1 : 0)) invalid();
                     copy[key] = snippet[key];
                 }
             }
-            for (const key of ['promoted', 'regenerated']) {
+            for (const key of ['promoted', 'regenerated', 'partialSource']) {
                 if (Object.hasOwn(snippet, key)) {
                     if (typeof snippet[key] !== 'boolean') invalid();
                     copy[key] = snippet[key];
@@ -71,5 +75,6 @@ export function validateMemoryImport(data, chatLength) {
     if (!integer(summarizedUpTo, -1, chatLength - 1)) invalid();
     if (Object.hasOwn(data, 'ghostedIndices') && (!Array.isArray(data.ghostedIndices)
         || data.ghostedIndices.some(index => !integer(index, 0, chatLength - 1)))) invalid();
-    return { layers, summarizedUpTo, ghostedIndices: [] };
+    if (Object.hasOwn(data, 'pinnedMemory') && typeof data.pinnedMemory !== 'string') invalid();
+    return { layers, summarizedUpTo, ghostedIndices: [], pinnedMemory: data.pinnedMemory ?? '' };
 }

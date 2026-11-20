@@ -470,3 +470,19 @@
     flex-direction: column;
     gap: 6px;
 }
+.sc-memory-dialog {
+    background: var(--SmartThemeBlurTintColor, #262626);
+    color: var(--SmartThemeBodyColor, white);
+    width: min(90vw, 760px);
+    max-height: 85vh;
+    overflow: auto;
+    border: 1px solid var(--SmartThemeBorderColor, #666);
+    border-radius: 10px;
+    padding: 1rem;
+    margin: auto;
+}
+.sc-memory-dialog::backdrop { background: rgb(0 0 0 / 60%); }
+.sc-memory-text { white-space: pre-wrap; overflow-wrap: anywhere; }
+.sc-summary-comparison { display: grid; gap: 1rem; grid-template-columns: repeat(auto-fit, minmax(min(100%, 240px), 1fr)); }
+.sc-dialog-actions { display: flex; justify-content: flex-end; gap: .5rem; }
+.sc-dialog-actions .menu_button, .sc-snippet-source { width: auto; }
