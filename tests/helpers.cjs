@@ -6,7 +6,7 @@ const jquery = require('jquery');
 const root = path.resolve(__dirname, '..');
 // The production entry point calls init(). Load the implementation without
 // starting SillyTavern, using the transport supplied by the fixture below.
-const runtimeSource = ['memory.js', 'runtime.js'].map(file =>
+const runtimeSource = ['memory.js', 'connection-ui.js', 'runtime.js'].map(file =>
     fs.readFileSync(path.join(root, file), 'utf8')
         .replace(/^import\s*\{[^}]*\}\s*from\s*'[^']+';/gm, '')
         .replace(/^export (?=(async )?function )/gm, '')
