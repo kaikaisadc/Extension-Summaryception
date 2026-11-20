@@ -907,6 +907,11 @@ async function summarizeOneBatch(visibleTurns, operation = null) {
     }
 }
 
+function showSummaryNotice(message) {
+    toastr.info(message, 'Summaryception', { timeOut: TUNING.toastMedium, progressBar: true })
+        ?.addClass('sc-summary-notice');
+}
+
 async function summarizeOneBatchFromTurns(visibleTurns, operation) {
     if (!isOperationCurrent(operation)) return false;
     const { scope } = operation;
@@ -928,7 +933,7 @@ async function summarizeOneBatchFromTurns(visibleTurns, operation) {
         await saveChatStore(scope);
         return 'EMPTY_SKIP';
     }
-    toastr.info(`正在为 ${batch.length} 个轮次生成摘要…`, 'Summaryception', { timeOut: TUNING.toastMedium, progressBar: true });
+    showSummaryNotice(`开始总结本批 ${batch.length} 轮对话…`);
     const summary = await callSummarizer(passage, buildFullContext(0), operation);
     if (!summary || !isOperationCurrent(operation)) return false;
     if (chat[triggerIndex] !== triggerMessage || !isSourceRangeCurrent(scope, start, source)) {
@@ -944,6 +949,7 @@ async function summarizeOneBatchFromTurns(visibleTurns, operation) {
     await ghostMessagesUpTo(end, start, scope);
     if (isOperationCurrent(operation)) await maybePromoteLayer(0, operation);
     await saveChatStore(scope);
+    if (isOperationCurrent(operation)) showSummaryNotice(`本批 ${batch.length} 轮对话已总结并保存。`);
     return true;
 }
 

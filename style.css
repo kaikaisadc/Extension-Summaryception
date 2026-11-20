@@ -499,3 +499,8 @@
 .sc-summary-comparison { display: grid; gap: 1rem; grid-template-columns: repeat(auto-fit, minmax(min(100%, 240px), 1fr)); }
 .sc-dialog-actions { display: flex; justify-content: flex-end; gap: .5rem; }
 .sc-dialog-actions .menu_button, .sc-snippet-source { width: auto; }
+
+#toast-container > .sc-summary-notice {
+    background-color: #1565c0;
+    color: #fff;
+}
