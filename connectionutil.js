@@ -587,44 +587,51 @@ async function sendViaOpenAI(url, apiKey, model, systemPrompt, userPrompt, maxTo
     const decoder = new TextDecoder();
     const onAbort = () => { reader.cancel().catch(() => {}); };
     signal?.addEventListener('abort', onAbort, { once: true });
+    let complete = false;
     let fullContent = '';
     let buffer = '';
 
     try {
-        while (true) {
+        stream: while (true) {
             throwIfAborted(signal);
             const { done, value } = await reader.read();
             throwIfAborted(signal);
-            if (done) break;
-
-            buffer += decoder.decode(value, { stream: true });
-
-            // Process complete SSE lines
+            buffer += done ? decoder.decode() : decoder.decode(value, { stream: true });
             const lines = buffer.split('\n');
-            // Keep the last potentially incomplete line in the buffer
-            buffer = lines.pop() || '';
+            buffer = done ? '' : lines.pop();
 
             for (const line of lines) {
                 const trimmed = line.trim();
                 if (!trimmed || !trimmed.startsWith('data:')) continue;
 
                 const data = trimmed.slice(5).trim();
-                if (data === '[DONE]') continue;
-
-                try {
-                    const parsed = JSON.parse(data);
-                    const delta = parsed.choices?.[0]?.delta?.content;
-                    if (delta) {
-                        fullContent += delta;
-                    }
-                } catch (e) {
-                    // Skip unparseable chunks (comments, keep-alive, etc.)
+                if (data === '[DONE]') {
+                    complete = true;
+                    break stream;
                 }
+
+                let parsed;
+                try {
+                    parsed = JSON.parse(data);
+                } catch {
+                    throw new ConnectionError('OpenAI 流返回了无效的数据。', { retryable: true });
+                }
+                if (parsed?.error) {
+                    throw new ConnectionError(parsed.error.message || 'OpenAI 流报告错误。', { retryable: true });
+                }
+                const choice = parsed?.choices?.[0];
+                if (choice?.finish_reason) complete = true;
+                const delta = choice?.delta?.content;
+                if (delta) fullContent += delta;
+            }
+            if (done) {
+                if (!complete) throw new ConnectionError('OpenAI 流在摘要完成前中断。', { retryable: true });
+                break;
             }
         }
     } finally {
         signal?.removeEventListener('abort', onAbort);
-        if (signal?.aborted) await reader.cancel().catch(() => {});
+        void reader.cancel().catch(() => {});
         reader.releaseLock();
     }
 

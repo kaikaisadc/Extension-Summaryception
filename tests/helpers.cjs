@@ -4,9 +4,13 @@ const path = require('node:path');
 const { JSDOM } = require('jsdom');
 const jquery = require('jquery');
 const root = path.resolve(__dirname, '..');
-const indexSource = fs.readFileSync(path.join(root, 'index.js'), 'utf8')
-    .replace(/import\s*\{[\s\S]*?\}\s*from\s*'\.\/connectionutil\.js';/, '')
-    .split('(async function init() {')[0];
+// The production entry point calls init(). Load the implementation without
+// starting SillyTavern, using the transport supplied by the fixture below.
+const runtimeSource = ['memory.js', 'runtime.js'].map(file =>
+    fs.readFileSync(path.join(root, file), 'utf8')
+        .replace(/^import\s*\{[^}]*\}\s*from\s*'[^']+';/gm, '')
+        .replace(/^export (?=(async )?function )/gm, '')
+).join('\n');
 
 async function flush() {
     for (let i = 0; i < 25; i++) await Promise.resolve();
@@ -85,7 +89,7 @@ function fixture() {
         },
     };
     const vmContext = vm.createContext(sandbox);
-    vm.runInContext(`'use strict';\n${indexSource}`, vmContext, { filename: 'index.js' });
+    vm.runInContext(`'use strict';\n${runtimeSource}`, vmContext, { filename: 'runtime.js' });
     const run = code => vm.runInContext(code, vmContext);
     run('Object.assign(getSettings(), { turnsPerSummary: 1, verbatimTurns: 1, connectionSource: "openai" })');
     return {
